@@ -1,0 +1,151 @@
+# ============================================================================
+# IPv6 IMPORT FILTER: {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_import_v6
+# Peer: {{ peer.description }} (AS{{ peer.asn }})
+# Type: {{ peer.type }}
+# Generated from YAML configuration
+# ============================================================================
+
+{% if peer.is_remote | default(false) and peer.type == "downstream" %}
+# SKIPPED: {{ peer_name }} is a remote downstream - no direct peering filter needed
+{% else %}
+filter {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_import_v6 {
+    {% if peer.type == "ibgp" %}
+    # ========== iBGP IPv6 IMPORT ==========
+    # Per-prefix UPLOAD preference (traffic TO these prefixes prefer this path)
+    {% if peer.priority_prefixes_import_v6 %}
+    {% for item in peer.priority_prefixes_import_v6 %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        bgp_large_community.add((55666, 1, 0));
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # Accept all routes with smart LocalPref handling
+    if bgp_local_pref = 100 then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+    }
+    bgp_large_community.add((55666, 1, 0));
+    accept;
+
+    {% else %}
+    # ========== eBGP IPv6 MARTIAN FILTERING ==========
+    # Reject IPv6 martian/reserved addresses
+    if net = ::/0 then reject;
+    if net ~ ::/96 then reject;
+    if net ~ ::1/128 then reject;
+    if net ~ ::ffff:0:0/96 then reject;
+    if net ~ 100::/64 then reject;
+    if net ~ 2001:db8::/32 then reject;
+    if net ~ fe80::/10 then reject;
+    if net ~ fc00::/7 then reject;
+    if net ~ ff00::/8 then reject;
+
+    # ========== BOGON AS PATH FILTERING ==========
+    int set bogon_asns;
+    bogon_asns = [0, 23456, 65535];
+    if bgp_path.first ~ bogon_asns then reject;
+
+    {% if peer.type == "upstream" %}
+    # ========== UPSTREAM IPv6 ==========
+    # Tag all routes from this upstream with AS number
+    bgp_large_community.add((55666, 3, {{ peer.asn }}));
+    
+    {% if peer.import_discard_asns_v6 %}
+    # ========== DISCARD ASNs IPv6 ==========
+    int set discard_asns_v6_{{ peer_name }};
+    discard_asns_v6_{{ peer_name }} = [ {{ peer.import_discard_asns_v6 | join(', ') }} ];
+    if bgp_path ~ discard_asns_v6_{{ peer_name }} then reject;
+    {% endif %}
+
+    {% if peer.import_localpref_by_asn_v6 %}
+    # ========== ASN-BASED LOCALPREF IPv6 ==========
+    {% for item in peer.import_localpref_by_asn_v6 %}
+    if bgp_path ~ [ {{ item.asn }} ] then { bgp_local_pref = {{ item.localpref }}; accept; }
+    {% endfor %}
+    {% endif %}
+
+    {% if peer.get('accept_default_route', false) %}
+    if net ~ ::/0 then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        bgp_large_community.add((55666, 3, 0));
+        accept;
+    }
+    {% endif %}
+    
+    bgp_local_pref = {{ peer.localpref_import | default(100) }};
+    bgp_large_community.add((55666, 3, 1));
+    accept;
+    {% endif %}
+
+    {% if peer.type == "downstream" %}
+    # ========== DOWNSTREAM IPv6 VALIDATION ==========
+    # Reject default route explicitly
+    if net = ::/0 then reject;
+
+    # Downstream ASN Validation
+    # Downstream ASN Validation (Disabled per user request)
+    # {% if peer.import_allowed_asns %}
+    # if ! (bgp_path.last ~ [ {{ peer.asn }}, {{ peer.import_allowed_asns | join(', ') }} ]) then reject;
+    # {% else %}
+    # if bgp_path.last != {{ peer.asn }} then reject;
+    # {% endif %}
+
+    {% if peer.allowed_prefixes_v6 %}
+    prefix set customer_prefs_v6_{{ peer_name }};
+    customer_prefs_v6_{{ peer_name }} = [
+    {%- for prefix in peer.allowed_prefixes_v6 %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    
+    if net ~ customer_prefs_v6_{{ peer_name }} then {
+        bgp_local_pref = {{ peer.localpref_import | default(200) }};
+        bgp_large_community.add((55666, 4, 1));
+        accept;
+    }
+    {% endif %}
+    
+
+
+    # Accept prefixes from import_allowed_prefix_lists
+    {% if peer.import_allowed_prefix_lists %}
+    if (
+        {%- for plist in peer.import_allowed_prefix_lists -%}
+        net ~ {{ plist | upper }}_V6{{ " || " if not loop.last else "" }}
+        {%- endfor -%}
+    ) then {
+        bgp_local_pref = {{ peer.localpref_import | default(200) }};
+        bgp_large_community.add((55666, 4, 1));
+        accept;
+    }
+    {% endif %}
+    
+    reject;
+    {% endif %}
+
+    {% if peer.type == "ix" %}
+    # ========== IX IPv6 IMPORT ==========
+    # Tag routes from this IX peer
+    bgp_large_community.add(({{ router['asn'] }}, 5, {{ peer.asn }}));
+    
+    # IX LocalPref (default: 200)
+    bgp_local_pref = {{ peer.localpref_import | default(200) }};
+    
+    accept;
+    {% endif %}
+
+    {% if peer.type == "bilateral" %}
+    # ========== BILATERAL IPv6 IMPORT ==========
+    # Tag routes from this bilateral peer
+    bgp_large_community.add(({{ router['asn'] }}, 7, {{ peer.asn }}));
+    
+    # Bilateral LocalPref (default: 350)
+    bgp_local_pref = {{ peer.localpref_import | default(350) }};
+    
+    accept;
+    {% endif %}
+    {% endif %}
+}
+{% endif %}

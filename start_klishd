@@ -1,0 +1,14 @@
+#!/bin/bash
+export PATH=$PATH:/home/well/bird-controlplane/dist/bin
+export LD_LIBRARY_PATH=/home/well/bird-controlplane/dist/lib:$LD_LIBRARY_PATH
+
+# Cleanup stale socket
+rm -f /tmp/klish-unix-socket
+
+# Run klishd in foreground for testing, or background for daemon
+# -f: Config file
+if [ "$1" == "debug" ]; then
+    klishd -f /home/well/bird-controlplane/klishd.conf -d -v
+else
+    klishd -f /home/well/bird-controlplane/klishd.conf
+fi

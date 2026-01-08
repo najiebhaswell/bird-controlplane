@@ -1,0 +1,9 @@
+# Router Identity Configuration
+hostname: my-router
+asn: 65000
+router_id: 10.0.0.1
+
+# BGP Defaults
+bgp:
+  hold_time: 90
+  default_localpref: 100

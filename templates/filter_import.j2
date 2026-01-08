@@ -1,0 +1,419 @@
+# ============================================================================
+# FILTER: {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_import
+# Peer: {{ peer.description }} (AS{{ peer.asn }})
+# Type: {{ peer.type }}
+# Generated from YAML configuration
+# ============================================================================
+
+{% if peer.is_remote | default(false) and peer.type == "downstream" %}
+# SKIPPED: {{ peer_name }} is a remote downstream - no direct peering filter needed
+{% else %}
+filter {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_import {
+    {% if peer.type == "ibgp" %}
+    # ========== iBGP IMPORT ==========
+    # Tag routes based on iBGP role: intercity=1, backbone=2, DR=3
+    {% if peer.is_dr | default(false) %}
+    # DR (Distribution Router) source
+    bgp_large_community.add(({{ router['asn'] }}, 1, 3));
+    {% elif peer.role == "intercity" %}
+    # Intercity iBGP source
+    bgp_large_community.add(({{ router['asn'] }}, 1, 1));
+    {% elif peer.role == "backbone" %}
+    # Backbone iBGP source
+    bgp_large_community.add(({{ router['asn'] }}, 1, 2));
+    {% else %}
+    # Generic iBGP source
+    bgp_large_community.add(({{ router['asn'] }}, 1, 0));
+    {% endif %}
+    
+    # ========== iBGP DISCARD RULES ==========
+    {% if peer.import_discard_asns %}
+    # Discard routes from specific ASNs on import
+    int set ibgp_discard_asns_{{ peer_name }};
+    ibgp_discard_asns_{{ peer_name }} = [
+    {%- for asn in peer.import_discard_asns -%}
+        {{ asn }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if bgp_path.last ~ ibgp_discard_asns_{{ peer_name }} then reject;
+    {% endif %}
+
+    {% if peer.import_discard_prefixes %}
+    # Discard specific prefixes on import
+    prefix set ibgp_discard_prefixes_{{ peer_name }};
+    ibgp_discard_prefixes_{{ peer_name }} = [
+    {%- for prefix in peer.import_discard_prefixes %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if net ~ ibgp_discard_prefixes_{{ peer_name }} then reject;
+    {% endif %}
+    
+    # ========== iBGP COMMUNITY-BASED FILTERING ==========
+    {% if peer.import_reject_communities is defined %}
+    # Reject routes with these communities on import
+    {% for comm in peer.import_reject_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then reject;
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.import_accept_communities is defined %}
+    # Accept routes matching these communities on import
+    {% for comm in peer.import_accept_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.import_community %}
+    # ========== COMMUNITY-BASED IMPORT (DR) ==========
+    # Accept routes tagged with community {{ peer.import_community }}
+    if ({{ peer.import_community | replace(":", ", ") }}) ~ bgp_community then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        accept;
+    }
+    {% endif %}
+    
+    # Per-prefix UPLOAD preference (traffic TO these prefixes prefer this path)
+    {% if peer.priority_prefixes_import %}
+    # Per-prefix import overrides for {{ peer.description }}
+    {% for item in peer.priority_prefixes_import %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # ========== iBGP ALLOWED PREFIX FILTERING ==========
+    {% if peer.import_allowed_prefix_lists %}
+    # Only accept routes matching these prefix-lists (IPv4)
+    {% for prefix_list_name in peer.import_allowed_prefix_lists %}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        accept;
+    }
+    {% endfor %}
+    # Reject everything else not in allowed prefix-lists
+    reject;
+}
+{% else %}
+    # Accept all routes with smart LocalPref handling (no prefix filtering)
+    if bgp_local_pref = 100 then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+    }
+    accept;
+}
+{% endif %}
+
+    {% else %}
+    # ========== MARTIAN FILTERING ==========
+    # Reject martian/reserved addresses
+    prefix set martians;
+    martians = [
+        0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16,
+        172.16.0.0/12, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15,
+        198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4
+    ];
+    if net ~ martians then reject;
+
+    # ========== BOGON AS PATH FILTERING ==========
+    # Reject routes with bogon/reserved ASNs
+    int set bogon_asns;
+    bogon_asns = [0, 23456, 65535];
+    if bgp_path.first ~ bogon_asns then reject;
+
+    # ========== NO TRANSIT NAP FILTERING ==========
+    # Reject routes containing NAP/IXP ASNs in path (no_transit_nap)
+    {% if no_transit_asns %}
+    int set no_transit_nap;
+    no_transit_nap = [
+    {%- for asn in no_transit_asns -%}
+        {{ asn }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if bgp_path ~ no_transit_nap then reject;
+    {% endif %}
+
+    # ========== IMPORT DISCARD RULES ==========
+    {% if peer.import_discard_asns %}
+    # Discard routes from specific ASNs on import
+    int set import_discard_asns_{{ peer_name }};
+    import_discard_asns_{{ peer_name }} = [
+    {%- for asn in peer.import_discard_asns -%}
+        {{ asn }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if bgp_path.last ~ import_discard_asns_{{ peer_name }} then reject;
+    {% endif %}
+
+    {% if peer.import_discard_prefixes %}
+    # Discard specific prefixes on import
+    prefix set import_discard_prefixes_{{ peer_name }};
+    import_discard_prefixes_{{ peer_name }} = [
+    {%- for prefix in peer.import_discard_prefixes %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if net ~ import_discard_prefixes_{{ peer_name }} then reject;
+    {% endif %}
+
+    # ========== COMMUNITY-BASED IMPORT FILTERING ==========
+    {% if peer.import_reject_large_communities is defined %}
+    # Reject routes with these LARGE communities on import
+    {% for comm in peer.import_reject_large_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then reject;
+    {% endfor %}
+    {% endif %}
+
+    {% if peer.import_reject_communities is defined %}
+    # Reject routes with these STANDARD communities on import
+    {% for comm in peer.import_reject_communities %}
+    if (bgp_community ~ [{{ comm }}]) then reject;
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.import_accept_large_communities is defined %}
+    # Accept routes matching these LARGE communities on import (bypass other checks)
+    {% for comm in peer.import_accept_large_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+
+    {% if peer.import_accept_communities is defined %}
+    # Accept routes matching these STANDARD communities on import (bypass other checks)
+    {% for comm in peer.import_accept_communities %}
+    if (bgp_community ~ [{{ comm }}]) then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+
+    {% if peer.import_accept_standard_communities is defined %}
+    # Accept routes matching these STANDARD communities on import
+    {% for comm in peer.import_accept_standard_communities %}
+    if (bgp_community ~ [{{ comm }}]) then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+
+    # ========== UPSTREAM SPECIAL HANDLING ==========
+    {% if peer.type == "upstream" %}
+    # Tag all routes from this upstream with AS number
+    bgp_large_community.add(({{ router['asn'] }}, 3, {{ peer.asn }}));
+    
+    {% if peer.accept_default_route %}
+    # Accept default route from upstream
+    if net ~ 0.0.0.0/0 then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        bgp_large_community.add(({{ router['asn'] }}, {{ peer.communities.info | default(3) }}, 0));
+        accept;
+    }
+    {% endif %}
+
+    # ========== IMPORT LOCALPREF BY PREFIX/ASN ==========
+    {% if peer.import_localpref_by_prefix %}
+    # Per-prefix LocalPref override on import
+    {% for item in peer.import_localpref_by_prefix %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.import_localpref_by_asn %}
+    # Per-ASN LocalPref override on import (based on origin AS)
+    {% for item in peer.import_localpref_by_asn %}
+    if bgp_path.last = {{ item.asn }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+
+    {% if peer.accept_full_table %}
+    # Accept full routing table from upstream
+    bgp_local_pref = {{ peer.localpref_import | default(100) }};
+    bgp_large_community.add(({{ router['asn'] }}, {{ peer.communities.info | default(3) }}, 1));
+    accept;
+    {% endif %}
+
+    {% endif %}
+
+    # ========== IX (INTERNET EXCHANGE) HANDLING ==========
+    {% if peer.type == "ix" %}
+    # Tag all routes from this IX peer with community (ASN, 5, PEER_ASN)
+    bgp_large_community.add(({{ router['asn'] }}, 5, {{ peer.asn }}));
+    
+    # IX peering typically uses lower LocalPref than upstream (peering vs transit)
+    # Default LocalPref for IX: 150 (higher than upstream 100, but adjustable)
+    bgp_local_pref = {{ peer.localpref_import | default(150) }};
+    
+    {% if peer.accept_default_route | default(false) %}
+    # Accept default route from IX (unusual but configurable)
+    if net ~ 0.0.0.0/0 then {
+        bgp_large_community.add(({{ router['asn'] }}, 5, 0));
+        accept;
+    }
+    {% endif %}
+    
+    # ========== IMPORT LOCALPREF BY PREFIX/ASN ==========
+    {% if peer.import_localpref_by_prefix %}
+    # Per-prefix LocalPref override on import
+    {% for item in peer.import_localpref_by_prefix %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.import_localpref_by_asn %}
+    # Per-ASN LocalPref override on import (based on origin AS)
+    {% for item in peer.import_localpref_by_asn %}
+    if bgp_path.last = {{ item.asn }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # Accept routes from IX peer
+    accept;
+    {% endif %}
+
+    # ========== BILATERAL PEERING HANDLING ==========
+    {% if peer.type == "bilateral" %}
+    # Tag all routes from this bilateral peer with community (ASN, 7, PEER_ASN)
+    bgp_large_community.add(({{ router['asn'] }}, 7, {{ peer.asn }}));
+    
+    # Bilateral peering typically uses higher LocalPref than IX (prefer direct peering)
+    # Default LocalPref for bilateral: 350
+    bgp_local_pref = {{ peer.localpref_import | default(350) }};
+    
+    {% if peer.accept_default_route | default(false) %}
+    # Accept default route from bilateral peer (unusual but configurable)
+    if net ~ 0.0.0.0/0 then {
+        bgp_large_community.add(({{ router['asn'] }}, 7, 0));
+        accept;
+    }
+    {% endif %}
+    
+    # ========== IMPORT LOCALPREF BY PREFIX/ASN ==========
+    {% if peer.import_localpref_by_prefix %}
+    # Per-prefix LocalPref override on import
+    {% for item in peer.import_localpref_by_prefix %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.import_localpref_by_asn %}
+    # Per-ASN LocalPref override on import (based on origin AS)
+    {% for item in peer.import_localpref_by_asn %}
+    if bgp_path.last = {{ item.asn }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # Accept routes from bilateral peer
+    accept;
+    {% endif %}
+
+    # ========== REGIONAL/INTERCITY HANDLING ==========
+    {% if peer.type == "regional" %}
+    # Regional peers accept specific prefixes with priority
+    {% if peer.priority_prefixes %}
+    prefix set priority_prefs_{{ peer_name }};
+    priority_prefs_{{ peer_name }} = [
+    {%- for item in peer.priority_prefixes %}
+        {{ item.prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    
+    if net ~ priority_prefs_{{ peer_name }} then {
+        {% for item in peer.priority_prefixes %}
+        if net ~ {{ item.prefix }} then {
+            bgp_local_pref = {{ item.localpref }};
+            bgp_large_community.add((55666, {{ peer.communities.info }}, 1));
+            accept;
+        }
+        {% endfor %}
+    }
+    {% endif %}
+
+    # Standard localpref for regional peers
+    if (source = RTS_BGP) then {
+        bgp_local_pref = {{ peer.localpref_import | default(100) }};
+        bgp_large_community.add((55666, {{ peer.communities.info }}, 1));
+        accept;
+    }
+    {% endif %}
+
+    # ========== DOWNSTREAM VALIDATION ==========
+    {% if peer.type == "downstream" %}
+    # Reject default route explicitly to prevent accidental leaks
+    if net = 0.0.0.0/0 then reject;
+    if net = ::/0 then reject;
+    # Tag all downstream routes with same community for easy iBGP sharing
+    bgp_large_community.add(({{ router['asn'] }}, 4, 1));
+    
+    {% if peer.content_provider | default(false) %}
+    # Content Provider tagging - tag routes from this content provider
+    bgp_large_community.add({{ peer.import_community_tag | default("(" ~ router['asn'] ~ ", 6, " ~ peer.asn ~ ")") }});
+    {% endif %}
+    
+    # Downstream ASN Validation (Disabled per user request)
+    # {% if peer.import_allowed_asns %}
+    # int set allowed_asns_{{ peer_name }};
+    # allowed_asns_{{ peer_name }} = [ {{ peer.asn }}, {{ peer.import_allowed_asns | join(', ') }} ];
+    # if ! (bgp_path.last ~ allowed_asns_{{ peer_name }}) then reject;
+    # {% else %}
+    # if bgp_path.last != {{ peer.asn }} then reject;
+    # {% endif %}
+
+    # Only accept customer's own prefixes
+    {% if peer.allowed_prefixes %}
+    prefix set customer_prefs_{{ peer_name }};
+    customer_prefs_{{ peer_name }} = [
+    {%- for prefix in peer.allowed_prefixes %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    
+    if net ~ customer_prefs_{{ peer_name }} then {
+        bgp_local_pref = {{ peer.localpref_import | default(500) }};
+        accept;
+    }
+    {% endif %}
+
+    # Accept prefixes from import_allowed_prefix_lists
+    {% if peer.import_allowed_prefix_lists %}
+    if (
+        {%- for plist in peer.import_allowed_prefix_lists -%}
+        net ~ {{ plist | upper }}_V4{{ " || " if not loop.last else "" }}
+        {%- endfor -%}
+    ) then {
+        bgp_local_pref = {{ peer.localpref_import | default(500) }};
+        accept;
+    }
+    {% endif %}
+
+    reject;
+    {% endif %}
+}
+{% endif %}
+{% endif %}

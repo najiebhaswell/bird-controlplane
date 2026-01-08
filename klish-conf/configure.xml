@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<KLISH
+	xmlns="https://klish.libcode.org/klish3"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="https://src.libcode.org/pkun/klish/src/master/klish.xsd">
+
+	<VIEW name="configure">
+		<PROMPT name="prompt">
+			<ACTION sym="prompt">%u@%h(config)# </ACTION>
+		</PROMPT>
+
+		<HOTKEY key="^Z" cmd="exit"/>
+
+		<COMMAND name="exit" help="Exit configuration mode">
+			<ACTION sym="nav">pop</ACTION>
+		</COMMAND>
+
+		<COMMAND name="do" help="Execute command from EXEC mode">
+			<PARAM name="cmd" help="Command" ptype="/STRING">
+				<ACTION sym="script">
+				${KLISH_PARAM_cmd}
+				</ACTION>
+			</PARAM>
+		</COMMAND>
+
+		<COMMAND name="commit" help="Commit changes (Deploy to BIRD)">
+			<ACTION sym="script">
+			/home/well/bird-controlplane/bin/bird-mgmt deploy
+			</ACTION>
+		</COMMAND>
+
+
+
+	</VIEW>
+
+</KLISH>

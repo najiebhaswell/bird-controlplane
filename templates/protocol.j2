@@ -1,0 +1,154 @@
+# ============================================================================
+# BGP PROTOCOL: {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}
+# Peer: {{ peer.description }} (AS{{ peer.asn }})
+# Type: {{ peer.type }}
+# Generated from YAML configuration
+# ============================================================================
+
+{% if peer.is_remote | default(false) %}
+# SKIPPED: {{ peer_name }} is a remote downstream (peering exists on another router)
+# Routes are received via iBGP and filters are still generated for selective export
+{% else %}
+
+{% set filter_prefix = "ibgp_" if peer.type == "ibgp" else "ebgp_" %}
+
+{# Check if separate IPv6 neighbor is defined (different from IPv4) #}
+{% set has_separate_v6 = peer.neighbor_ip_v6 is defined and peer.neighbor_ip_v6 != peer.neighbor_ip %}
+
+# ========== IPv4 Protocol ==========
+protocol bgp {{ filter_prefix }}{{ peer_name }}{% if has_separate_v6 %}_v4{% endif %} {
+    description "{{ peer.description }}{% if has_separate_v6 %} (IPv4){% endif %}";
+    {% if peer.shutdown %}disabled yes;{% endif %}
+    local {{ peer.local_ip }} as {{ router['asn'] }};
+    neighbor {{ peer.neighbor_ip }} as {{ peer.asn }};
+    
+    {% if peer.type in ["downstream", "ibgp", "ix", "bilateral"] %}
+    # Direct connection (same subnet)
+    direct;
+    {% else %}
+    # May require next hop resolution
+    {% if peer.get('multihop', false) %}
+    multihop;
+    {% endif %}
+    {% endif %}
+    
+    {% if peer.type == "ix" and peer.interface is defined %}
+    # IX peering interface (required for shared LAN)
+    interface "{{ peer.interface }}";
+    {% endif %}
+    
+    {% if peer.graceful_restart %}
+    graceful restart;
+    {% endif %}
+    
+    {% if peer.get('rr_client', false) or peer.get('route_reflector_client', false) %}
+    rr client;
+    {% endif %}
+    
+    hold time {{ peer.hold_time | default(router.bgp.hold_time) | default(60) }};
+    
+    # IPv4 Channel
+    ipv4 {
+        {% if peer.get('next_hop_self', false) %}
+        next hop self;
+        {% endif %}
+        
+        {% if peer.type == "downstream" %}
+        import limit {{ peer.max_prefixes | default(1000) }} action disable;
+        {% endif %}
+        
+        {% set af_v4 = peer.address_family_ipv4_unicast | default({}) %}
+        {% set rmap_v4_import = af_v4.route_map_import | default(peer.filter_import) %}
+        {% set rmap_v4_export = af_v4.route_map_export | default(peer.filter_export) %}
+
+        {% if rmap_v4_import %}
+        import filter route_map_{{ rmap_v4_import | replace("-", "_") }};
+        {% else %}
+        import filter {{ filter_prefix }}{{ peer_name }}_import;
+        {% endif %}
+
+        export filter {{ filter_prefix }}{{ peer_name }}_export;
+    };
+    
+    {% if not has_separate_v6 and peer.get('ipv6_enabled', false) %}
+    # IPv6 Channel (same neighbor)
+    ipv6 {
+        {% if peer.get('next_hop_self', false) %}
+        next hop self;
+        {% endif %}
+        
+        {% if peer.type == "downstream" %}
+        import limit {{ peer.max_prefixes_v6 | default(500) }} action disable;
+        {% endif %}
+        
+        {% set af_v6 = peer.address_family_ipv6_unicast | default({}) %}
+        {% set rmap_v6_import = af_v6.route_map_import %}
+        {% set rmap_v6_export = af_v6.route_map_export %}
+
+        {% if rmap_v6_import %}
+        import filter route_map_{{ rmap_v6_import | replace("-", "_") }};
+        {% else %}
+        import filter {{ filter_prefix }}{{ peer_name }}_import_v6;
+        {% endif %}
+
+        export filter {{ filter_prefix }}{{ peer_name }}_export_v6;
+    };
+    {% endif %}
+}
+
+{% if has_separate_v6 %}
+# ========== IPv6 Protocol (separate neighbor) ==========
+protocol bgp {{ filter_prefix }}{{ peer_name }}_v6 {
+    description "{{ peer.description }} (IPv6)";
+    {% if peer.shutdown %}disabled yes;{% endif %}
+    local {{ peer.local_ip_v6 | default(peer.local_ip) }} as {{ router['asn'] }};
+    neighbor {{ peer.neighbor_ip_v6 }} as {{ peer.asn }};
+    
+    {% if peer.type in ["downstream", "ibgp", "ix", "bilateral"] %}
+    direct;
+    {% else %}
+    {% if peer.get('multihop', false) %}
+    multihop;
+    {% endif %}
+    {% endif %}
+    
+    {% if peer.type == "ix" and peer.interface is defined %}
+    interface "{{ peer.interface }}";
+    {% endif %}
+    
+    {% if peer.graceful_restart %}
+    graceful restart;
+    {% endif %}
+    
+    {% if peer.get('rr_client', false) or peer.get('route_reflector_client', false) %}
+    rr client;
+    {% endif %}
+    
+    hold time {{ peer.hold_time | default(router.bgp.hold_time) | default(60) }};
+    
+    # IPv6 Channel only
+    ipv6 {
+        {% if peer.get('next_hop_self', false) %}
+        next hop self;
+        {% endif %}
+        
+        {% if peer.type == "downstream" %}
+        import limit {{ peer.max_prefixes_v6 | default(500) }} action disable;
+        {% endif %}
+        
+        {% set af_v6 = peer.address_family_ipv6_unicast | default({}) %}
+        {% set rmap_v6_import = af_v6.route_map_import %}
+        {% set rmap_v6_export = af_v6.route_map_export %}
+
+        {% if rmap_v6_import %}
+        import filter route_map_{{ rmap_v6_import | replace("-", "_") }};
+        {% else %}
+        import filter {{ filter_prefix }}{{ peer_name }}_import_v6;
+        {% endif %}
+
+        export filter {{ filter_prefix }}{{ peer_name }}_export_v6;
+    };
+}
+{% endif %}
+
+{% endif %}

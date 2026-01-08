@@ -1,0 +1,14 @@
+# Bogon ASN Filtering
+# Routes with these ASNs in the path will be rejected
+
+bogon_asns:
+  ranges:
+    # RFC 7607 - Reserved ASNs
+    - { min: 0, max: 0 }
+    - { min: 23456, max: 23456 }
+    - { min: 64496, max: 64511 }
+    - { min: 65535, max: 65535 }
+    # RFC 5398 - Documentation ASNs
+    - { min: 64512, max: 65534 }
+    # RFC 6996 - Private ASNs (4-byte)
+    - { min: 4200000000, max: 4294967294 }

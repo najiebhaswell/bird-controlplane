@@ -1,0 +1,9 @@
+# BGP Peers Configuration
+# Peers are automatically created via CLI commands
+peers:
+  upstream: {}
+  downstream: {}
+  bilateral: {}
+  ix: {}
+  backbone: {}
+  intercity: {}

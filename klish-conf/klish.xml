@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<KLISH
+	xmlns="https://klish.libcode.org/klish3"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="https://src.libcode.org/pkun/klish/src/master/klish.xsd">
+
+	<PLUGIN name="klish" file="/home/well/bird-controlplane/dist/lib/libklish-plugin-klish.so"/>
+	<PLUGIN name="script" file="/home/well/bird-controlplane/dist/lib/libklish-plugin-script.so"/>
+
+	<PTYPE name="STRING">
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="INT">
+		<ACTION sym="INT@klish"/>
+	</PTYPE>
+
+	<PTYPE name="SUBCOMMAND">
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<!-- Dynamic completion PTYPEs -->
+	<PTYPE name="PREFIX_LIST_NAME">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-prefix-lists
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="PREFIX_LIST6_NAME">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-prefix-lists6
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="ROUTE_MAP_NAME">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-route-maps
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="COMMUNITY_LIST_NAME">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-community-lists
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="LARGE_COMMUNITY_LIST_NAME">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-large-community-lists
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="PREFIX_LIST_RULE">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-prefix-list-rules "${KLISH_PARAM_name}"
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+	<PTYPE name="PREFIX_LIST6_RULE">
+		<COMPL>
+			<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt list-prefix-list-rules "${KLISH_PARAM_name}" --ipv6
+			</ACTION>
+		</COMPL>
+		<ACTION sym="STRING@klish"/>
+	</PTYPE>
+
+</KLISH>

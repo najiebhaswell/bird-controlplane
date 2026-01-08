@@ -1,0 +1,653 @@
+# ============================================================================
+# FILTER: {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_export
+# Peer: {{ peer.description }} (AS{{ peer.asn }})
+# Type: {{ peer.type }}
+# Generated from YAML configuration
+# ============================================================================
+
+{% if peer.is_remote | default(false) and peer.type == "downstream" %}
+# SKIPPED: {{ peer_name }} is a remote downstream - no direct peering filter needed
+{% else %}
+filter {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_export {
+    # ========== GLOBAL ATTRIBUTE HANDLING ==========
+    
+    # Handle send-community
+    {% if peer.send_community %}
+    {% if peer.send_community == 'none' %}
+    bgp_community.delete([(*,*)]);
+    bgp_large_community.delete([(*,*)]);
+    {% elif peer.send_community == 'standard' %}
+    bgp_large_community.delete([(*,*)]);
+    {% elif peer.send_community == 'large' %}
+    bgp_community.delete([(*,*)]);
+    {% endif %}
+    {% endif %}
+
+    # Handle as-path-prepend
+    {% if peer.as_path_prepend %}
+    {% set prepend_parts = peer.as_path_prepend.split(' ') %}
+    {% set prepend_asn = prepend_parts[0] %}
+    {% set prepend_count = prepend_parts[1] | int %}
+    {% for i in range(prepend_count) %}
+    bgp_path.prepend({{ prepend_asn }});
+    {% endfor %}
+    {% endif %}
+    # ========== REDISTRIBUTE STATIC/CONNECTED (Global) ==========
+    {% if peer.redistribute_static %}
+    # Redistribute static routes to this peer
+    if source = RTS_STATIC then accept;
+    {% endif %}
+    {% if peer.redistribute_connected %}
+    # Redistribute connected/direct routes to this peer
+    if source = RTS_DEVICE then accept;
+    {% endif %}
+
+    # ========== USER DEFINED ROUTE-MAP (Global) ==========
+    {% if rmap_export %}
+    # Call user-defined route-map function
+    if route_map_{{ rmap_export | replace("-", "_") }}_fn() then accept;
+    reject;
+    
+    {% else %}
+    
+    # ========== DEFAULT PER-TYPE LOGIC ==========
+    {% if peer.type == "ibgp" %}
+    # ========== iBGP EXPORT ==========
+    {% if peer.localpref_export %}
+    # Base Local Preference for routes TO this peer
+    bgp_local_pref = {{ peer.localpref_export }};
+    {% endif %}
+    {% if peer.med_export %}
+    # Set MED for outbound traffic engineering (lower = better)
+    bgp_med = {{ peer.med_export }};
+    {% endif %}
+    
+    # Per-prefix override (priority_prefixes_export)
+    {% if peer.priority_prefixes_export %}
+    {% for item in peer.priority_prefixes_export %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # ========== EXPORT LOCALPREF BY PREFIX ==========
+    {% if peer.export_localpref_by_prefix %}
+    # Per-prefix LocalPref on export (traffic engineering)
+    {% for item in peer.export_localpref_by_prefix %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # ========== EXPORT LOCALPREF BY ASN ==========
+    {% if peer.export_localpref_by_asn %}
+    # Per-ASN LocalPref on export (traffic engineering)
+    {% for item in peer.export_localpref_by_asn %}
+    if bgp_path.last = {{ item.asn }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+
+    # ========== COMMUNITY TAGGING RULES ==========
+    {% if peer.community_tagging_rules %}
+    # Custom tagging rules (supports both Standard and Large communities)
+    {% for rule in peer.community_tagging_rules %}
+    if (net ~ {{ rule.prefix_list | upper }}_V4) then {
+        {% if rule.add_community is defined %}
+        bgp_community.add({{ rule.add_community }});
+        {% elif rule.add_large_community is defined %}
+        bgp_large_community.add({{ rule.add_large_community }});
+        {% endif %}
+    }
+    {% endfor %}
+    {% endif %}
+
+    # ========== COMMUNITY-BASED EXPORT FILTERING (BYPASS) ==========
+    # Placed before prefix filtering to act as explicit overrides
+
+    {% if peer.export_accept_large_communities is defined %}
+    # Accept routes matching these LARGE communities on export (bypass prefix limits)
+    {% for comm in peer.export_accept_large_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then accept;
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.export_accept_communities is defined %}
+    # Accept routes matching these STANDARD communities on export (bypass prefix limits)
+    {% for comm in peer.export_accept_communities %}
+    if (bgp_community ~ [{{ comm }}]) then accept;
+    {% endfor %}
+    {% endif %}
+
+    {% if peer.export_reject_large_communities is defined %}
+    # Reject routes matching these LARGE communities on export
+    {% for comm in peer.export_reject_large_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then reject;
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.export_reject_communities is defined %}
+    # Reject routes matching these STANDARD communities on export
+    {% for comm in peer.export_reject_communities %}
+    if (bgp_community ~ [{{ comm }}]) then reject;
+    {% endfor %}
+    {% endif %}
+    
+    # ========== iBGP EXPORT PREFIX FILTERING ==========
+    {% if peer.export_allowed_prefix_lists %}
+    # Only export routes matching these prefix-lists (IPv4)
+    {% for prefix_list_name in peer.export_allowed_prefix_lists %}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    # Reject everything else not in allowed prefix-lists
+    reject;
+    {% elif peer.export_only_prefix_lists %}
+    # Only export routes matching these prefix-lists (strict mode)
+    {% for prefix_list_name in peer.export_only_prefix_lists %}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    # Export device routes with community tag
+    if (source = RTS_DEVICE) then {
+        bgp_community.add(({{ router['asn'] }}, 1111));
+        accept;
+    }
+    # Reject everything else
+    reject;
+    {% else %}
+    
+    # Default behavior if no route-map:
+    # Export BGP routes and local implementation routes
+    if proto ~ "bgp_*" then accept;
+    if proto = "static_v4" then accept;
+    if source = RTS_DEVICE then accept;
+    
+    # Implicit reject (if route-map didn't accept or default rules didn't match)
+    reject;
+    
+    # Export own static routes (GMedia prefixes) - tag with own network community
+    if source = RTS_STATIC then {
+        bgp_large_community.add(({{ router['asn'] }}, 1, 1000));
+        bgp_community.add(({{ router['asn'] }}, 1000));
+        accept;
+    }
+    
+    # Export downstream customer routes with selective intercity filtering
+    {% if downstream_peers %}
+    {% for ds_name, ds_config in downstream_peers.items() %}
+    {% if ds_config.export_to_intercity is defined %}
+    # {{ ds_config.description | default(ds_name) }} - Selective intercity export to: {{ ds_config.export_to_intercity | join(', ') }}
+    {% if peer_name in ds_config.export_to_intercity %}
+    if (bgp_large_community ~ [(55666, 4, 1)]) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% else %}
+    # BLOCKED: {{ ds_name }} (AS{{ ds_config.asn }}) not in intercity export list for {{ peer_name }}
+    {% endif %}
+    {% else %}
+    # {{ ds_config.description | default(ds_name) }} - Export to all iBGP peers
+    if (bgp_large_community ~ [(55666, 4, 1)]) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% endif %}
+    {% endfor %}
+    
+    # Accept remote downstream routes from other iBGP peers (already tagged with downstream community)
+    if (bgp_large_community ~ [(55666, 4, 1)]) then accept;
+    {% else %}
+    # No downstream peers defined - export all customer routes
+    if (bgp_large_community ~ [(55666, 4, *)]) then accept;
+    {% endif %}
+    
+    # Export own network prefixes from other AS55666 routers (via iBGP)
+    # Accept both large community (55666, 1, 1000) and standard community (55666,1000) for backward compatibility
+    if (bgp_large_community ~ [({{ router['asn'] }}, 1, 1000)]) then accept;
+    if (bgp_community ~ [({{ router['asn'] }}, 1000)]) then accept;
+    
+    {% if peer.export_upstream_routes | default(false) %}
+    # Export upstream routes to this iBGP peer
+    if source = RTS_BGP then accept;
+    {% endif %}
+    
+    reject;
+    {% endif %}
+
+    {% elif peer.type == "upstream" %}
+    # ========== UPSTREAM EXPORT ==========
+    
+    # ========== BOGON/MARTIAN REJECTION (Defense-in-depth) ==========
+    prefix set martians;
+    martians = [
+        0.0.0.0/8+, 10.0.0.0/8+, 127.0.0.0/8+, 169.254.0.0/16+,
+        172.16.0.0/12+, 192.0.2.0/24+, 192.168.0.0/16+, 198.18.0.0/15+,
+        198.51.100.0/24+, 203.0.113.0/24+, 224.0.0.0/4+, 240.0.0.0/4+
+    ];
+    if net ~ martians then reject;
+    
+    # Clear any potentially dangerous BGP attributes
+    bgp_community.delete([(*, *)]);  # Clear regular communities if needed
+    
+    # ========== EXPORT DISCARD RULES ==========
+    {% if peer.export_discard_asns %}
+    # Discard routes from specific ASNs on export
+    int set export_discard_asns_{{ peer_name }};
+    export_discard_asns_{{ peer_name }} = [
+    {%- for asn in peer.export_discard_asns -%}
+        {{ asn }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if bgp_path.last ~ export_discard_asns_{{ peer_name }} then reject;
+    {% endif %}
+
+    {% if peer.export_discard_prefixes %}
+    # Discard specific prefixes on export
+    prefix set export_discard_prefixes_{{ peer_name }};
+    export_discard_prefixes_{{ peer_name }} = [
+    {%- for prefix in peer.export_discard_prefixes %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if net ~ export_discard_prefixes_{{ peer_name }} then reject;
+    {% endif %}
+    
+    # Legacy community filtering block removed (moved to top)
+    
+    # ========== COMMUNITY-BASED ACTION CONTROL ==========
+    # No-export to this specific peer: (ASN, 100, PEER_ASN)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 100, {{ peer.asn }})]) then reject;
+    
+    # No-export to ALL upstreams: (ASN, 110, 0)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 110, 0)]) then reject;
+    
+    # Prepend to this specific peer
+    # (ASN, 101, PEER_ASN) = prepend 1x
+    if (bgp_large_community ~ [({{ router['asn'] }}, 101, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 102, PEER_ASN) = prepend 2x
+    if (bgp_large_community ~ [({{ router['asn'] }}, 102, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 103, PEER_ASN) = prepend 3x
+    if (bgp_large_community ~ [({{ router['asn'] }}, 103, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    # Prepend to ALL upstreams
+    # (ASN, 111, 0) = prepend 1x to all upstreams
+    if (bgp_large_community ~ [({{ router['asn'] }}, 111, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 112, 0) = prepend 2x to all upstreams
+    if (bgp_large_community ~ [({{ router['asn'] }}, 112, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 113, 0) = prepend 3x to all upstreams
+    if (bgp_large_community ~ [({{ router['asn'] }}, 113, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    {% if peer.export_prefix_lists is defined %}
+    # ========== EXPORT BY PREFIX-LIST (from peer config) ==========
+    # Configured prefix-lists: {{ peer.export_prefix_lists | join(', ') }}
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    # Export {{ prefix_list_name }}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    
+    {% else %}
+    # ========== DEFAULT EXPORT (no export_prefix_lists configured) ==========
+    # Using aggregate prefix-lists OWN_PREFIXES_V4 and REMOTE_PREFIXES_V4
+    
+    {% if own_prefixes_v4 %}
+    # Check for per-prefix prepend rules for own prefixes
+    {% if peer.own_prefix_prepend is defined %}
+    {% for rule in peer.own_prefix_prepend %}
+    if (net = {{ rule.prefix }}) then {
+        {% for i in range(rule.prepend | default(0)) %}
+        bgp_path.prepend({{ router['asn'] }});
+        {% endfor %}
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # Accept own prefixes from local static routes (validated against OWN_PREFIXES_V4)
+    if (source = RTS_STATIC) && (net ~ OWN_PREFIXES_V4) then accept;
+    
+    # Accept own prefixes originated from other AS55666 routers (via iBGP)
+    if (net ~ OWN_PREFIXES_V4) && (bgp_path.len = 0) then accept;
+    {% else %}
+    # WARNING: No own_prefixes defined - all static routes BLOCKED for safety
+    {% endif %}
+    
+    # Remote own prefixes from other AS55666 routers (using global REMOTE_PREFIXES_V4)
+    {% if remote_own_prefixes_v4 %}
+    if (net ~ REMOTE_PREFIXES_V4) && (bgp_path.len = 0) then accept;
+    {% endif %}
+    {% endif %}
+    
+    # Export downstream customer routes with selective filtering
+    {% if downstream_peers %}
+    {% for ds_name, ds_config in downstream_peers.items() %}
+    {% if ds_config.prefix_export_rules is defined %}
+    # {{ ds_config.description | default(ds_name) }} - Per-prefix export rules
+    {% for rule in ds_config.prefix_export_rules %}
+    {% if rule.upstreams is mapping %}
+    {# New format: upstreams as dict with prepend counts #}
+    {% if peer_name in rule.upstreams %}
+    {% set upstream_config = rule.upstreams[peer_name] %}
+    # Prefix {{ rule.prefix }} -> {{ peer_name }} (prepend: {{ upstream_config.prepend | default(0) }})
+    if (net = {{ rule.prefix }}) && (bgp_path.last = {{ ds_config.asn }}) then {
+        {% for i in range(upstream_config.prepend | default(0)) %}
+        bgp_path.prepend(55666);
+        {% endfor %}
+        accept;
+    }
+    {% else %}
+    # Prefix {{ rule.prefix }} BLOCKED for {{ peer_name }}
+    {% endif %}
+    {% else %}
+    {# Original format: upstreams as list #}
+    {% if peer_name in rule.upstreams %}
+    # Prefix {{ rule.prefix }} allowed to {{ peer_name }}
+    if (net = {{ rule.prefix }}) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% else %}
+    # Prefix {{ rule.prefix }} BLOCKED for {{ peer_name }}
+    {% endif %}
+    {% endif %}
+    {% endfor %}
+    {% elif ds_config.export_to_upstreams is defined %}
+    # {{ ds_config.description | default(ds_name) }} - Selective export to: {{ ds_config.export_to_upstreams | join(', ') }}
+    {% if peer_name in ds_config.export_to_upstreams %}
+    if (bgp_large_community ~ [(55666, 4, 1)]) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% else %}
+    # BLOCKED: {{ ds_name }} (AS{{ ds_config.asn }}) not in export list for {{ peer_name }}
+    {% endif %}
+    {% else %}
+    # {{ ds_config.description | default(ds_name) }} - Export to all upstreams
+    if (bgp_large_community ~ [(55666, 4, 1)]) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% endif %}
+    {% endfor %}
+    
+    # Accept remote downstream routes from other iBGP peers
+    if (bgp_large_community ~ [(55666, 4, 1)]) then accept;
+    {% else %}
+    # No downstream peers defined - export based on community
+    if (bgp_large_community ~ [(55666, 4, *)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% elif peer.type == "regional" %}
+    # ========== REGIONAL EXPORT ==========
+    # Export default route if available
+    if net ~ 0.0.0.0/0 then accept;
+    
+    {% if peer.export_prefix_lists is defined %}
+    # ========== EXPORT BY PREFIX-LIST (from peer config) ==========
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    {% else %}
+    # Export our prefixes
+    if (source = RTS_STATIC) || (source = RTS_DEVICE) then accept;
+    
+    # Export customer routes from downstream
+    if (bgp_large_community ~ [({{ router['asn'] }}, 4, *)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% elif peer.type == "ix" %}
+    # ========== IX (INTERNET EXCHANGE) EXPORT ==========
+    # IX peering exports only own prefixes + downstream customers
+    # Does NOT export transit (upstream) routes
+    
+    # ========== BOGON/MARTIAN REJECTION (Defense-in-depth) ==========
+    prefix set martians;
+    martians = [
+        0.0.0.0/8+, 10.0.0.0/8+, 127.0.0.0/8+, 169.254.0.0/16+,
+        172.16.0.0/12+, 192.0.2.0/24+, 192.168.0.0/16+, 198.18.0.0/15+,
+        198.51.100.0/24+, 203.0.113.0/24+, 224.0.0.0/4+, 240.0.0.0/4+
+    ];
+    if net ~ martians then reject;
+    
+    # Clear communities before export
+    bgp_community.delete([(*, *)]);
+    
+    # ========== EXPORT DISCARD RULES ==========
+    {% if peer.export_discard_asns %}
+    # Discard routes from specific ASNs on export
+    int set export_discard_asns_{{ peer_name }};
+    export_discard_asns_{{ peer_name }} = [
+    {%- for asn in peer.export_discard_asns -%}
+        {{ asn }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if bgp_path.last ~ export_discard_asns_{{ peer_name }} then reject;
+    {% endif %}
+
+    {% if peer.export_discard_prefixes %}
+    # Discard specific prefixes on export
+    prefix set export_discard_prefixes_{{ peer_name }};
+    export_discard_prefixes_{{ peer_name }} = [
+    {%- for prefix in peer.export_discard_prefixes %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if net ~ export_discard_prefixes_{{ peer_name }} then reject;
+    {% endif %}
+    
+    # ========== COMMUNITY-BASED EXPORT FILTERING (from peer config) ==========
+    {% if peer.export_reject_communities is defined %}
+    # Reject routes with these communities on export
+    {% for comm in peer.export_reject_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then reject;
+    {% endfor %}
+    {% endif %}
+    
+    {% if peer.export_accept_communities is defined %}
+    # Accept routes matching these communities on export (bypass other checks)
+    {% for comm in peer.export_accept_communities %}
+    if (bgp_large_community ~ [{{ comm }}]) then accept;
+    {% endfor %}
+    {% endif %}
+    
+    # ========== COMMUNITY-BASED ACTION CONTROL ==========
+    # No-export to this specific IX peer: (ASN, 100, PEER_ASN)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 100, {{ peer.asn }})]) then reject;
+    
+    # No-export to ALL IX: (ASN, 120, 0)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 120, 0)]) then reject;
+    
+    # Prepend to this specific IX peer
+    # (ASN, 101, PEER_ASN) = prepend 1x
+    if (bgp_large_community ~ [({{ router['asn'] }}, 101, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 102, PEER_ASN) = prepend 2x
+    if (bgp_large_community ~ [({{ router['asn'] }}, 102, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 103, PEER_ASN) = prepend 3x
+    if (bgp_large_community ~ [({{ router['asn'] }}, 103, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    # Prepend to ALL IX
+    # (ASN, 121, 0) = prepend 1x to all IX
+    if (bgp_large_community ~ [({{ router['asn'] }}, 121, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 122, 0) = prepend 2x to all IX
+    if (bgp_large_community ~ [({{ router['asn'] }}, 122, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    # (ASN, 123, 0) = prepend 3x to all IX
+    if (bgp_large_community ~ [({{ router['asn'] }}, 123, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    {% if peer.export_prefix_lists is defined %}
+    # ========== EXPORT BY PREFIX-LIST (from peer config) ==========
+    # Configured prefix-lists: {{ peer.export_prefix_lists | join(', ') }}
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    # Export {{ prefix_list_name }}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    
+    {% else %}
+    # ========== DEFAULT IX EXPORT (own + downstream) ==========
+    # Export own prefixes from static routes
+    if (source = RTS_STATIC) && (net ~ OWN_PREFIXES_V4) then accept;
+    
+    # Export own prefixes from iBGP (empty AS path)
+    if (net ~ OWN_PREFIXES_V4) && (bgp_path.len = 0) then accept;
+    
+    # Export remote own prefixes from iBGP
+    {% if remote_own_prefixes_v4 %}
+    if (net ~ REMOTE_PREFIXES_V4) && (bgp_path.len = 0) then accept;
+    {% endif %}
+    
+    # Export downstream customer routes
+    if (bgp_large_community ~ [({{ router['asn'] }}, 4, 1)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% elif peer.type == "bilateral" %}
+    # ========== BILATERAL PEERING EXPORT ==========
+    # Bilateral peering exports own prefixes + downstream customers
+    # Does NOT export transit (upstream) routes
+    
+    # ========== BOGON/MARTIAN REJECTION (Defense-in-depth) ==========
+    prefix set martians;
+    martians = [
+        0.0.0.0/8+, 10.0.0.0/8+, 127.0.0.0/8+, 169.254.0.0/16+,
+        172.16.0.0/12+, 192.0.2.0/24+, 192.168.0.0/16+, 198.18.0.0/15+,
+        198.51.100.0/24+, 203.0.113.0/24+, 224.0.0.0/4+, 240.0.0.0/4+
+    ];
+    if net ~ martians then reject;
+    
+    # Clear communities before export
+    bgp_community.delete([(*, *)]);
+    
+    # ========== EXPORT DISCARD RULES ==========
+    {% if peer.export_discard_asns %}
+    int set export_discard_asns_{{ peer_name }};
+    export_discard_asns_{{ peer_name }} = [
+    {%- for asn in peer.export_discard_asns -%}
+        {{ asn }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if bgp_path.last ~ export_discard_asns_{{ peer_name }} then reject;
+    {% endif %}
+
+    {% if peer.export_discard_prefixes %}
+    prefix set export_discard_prefixes_{{ peer_name }};
+    export_discard_prefixes_{{ peer_name }} = [
+    {%- for prefix in peer.export_discard_prefixes %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    if net ~ export_discard_prefixes_{{ peer_name }} then reject;
+    {% endif %}
+    
+    # ========== COMMUNITY-BASED ACTION CONTROL ==========
+    # No-export to this specific bilateral peer: (ASN, 100, PEER_ASN)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 100, {{ peer.asn }})]) then reject;
+    
+    # No-export to ALL bilateral: (ASN, 130, 0)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 130, 0)]) then reject;
+    
+    # Prepend to this specific bilateral peer
+    if (bgp_large_community ~ [({{ router['asn'] }}, 101, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 102, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 103, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    {% if peer.export_prefix_lists is defined %}
+    # ========== EXPORT BY PREFIX-LIST (from peer config) ==========
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    
+    {% else %}
+    # ========== DEFAULT BILATERAL EXPORT (own + downstream) ==========
+    # Export own prefixes from static routes
+    if (source = RTS_STATIC) && (net ~ OWN_PREFIXES_V4) then accept;
+    
+    # Export own prefixes from iBGP (empty AS path)
+    if (net ~ OWN_PREFIXES_V4) && (bgp_path.len = 0) then accept;
+    
+    # Export remote own prefixes from iBGP
+    {% if remote_own_prefixes_v4 %}
+    if (net ~ REMOTE_PREFIXES_V4) && (bgp_path.len = 0) then accept;
+    {% endif %}
+    
+    # Export downstream customer routes
+    if (bgp_large_community ~ [({{ router['asn'] }}, 4, 1)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% elif peer.type == "downstream" %}
+    # ========== DOWNSTREAM EXPORT ==========
+    # Export default route
+    if net ~ 0.0.0.0/0 then accept;
+    
+    {% if peer.export_prefix_lists is defined %}
+    # ========== EXPORT BY PREFIX-LIST (from peer config) ==========
+    # Only export these specific prefix-lists to this customer
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    if (net ~ {{ prefix_list_name | upper }}_V4) then accept;
+    {% endfor %}
+    {% else %}
+    # Export our own prefixes
+    if (source = RTS_STATIC) || (source = RTS_DEVICE) then accept;
+    
+    # Export own prefixes from iBGP
+    if (net ~ OWN_PREFIXES_V4) then accept;
+    
+    {% if remote_own_prefixes_v4 %}
+    # Export remote own prefixes
+    if (net ~ REMOTE_PREFIXES_V4) then accept;
+    {% endif %}
+    {% endif %}
+    
+    # Do not export customer routes from other customers
+    if (bgp_large_community ~ [({{ router['asn'] }}, 4, *)]) then {
+        reject;
+    }
+    
+    reject;
+
+    {% else %}
+    # Default deny
+    reject;
+    {% endif %}
+    {% endif %}
+}
+{% endif %}

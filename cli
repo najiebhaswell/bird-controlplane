@@ -1,0 +1,23 @@
+#!/bin/bash
+export PATH=$PATH:/home/well/bird-controlplane/dist/bin
+export LD_LIBRARY_PATH=/home/well/bird-controlplane/dist/lib:$LD_LIBRARY_PATH
+
+# Check for bird-mgmt
+if [ ! -x "./bin/bird-mgmt" ]; then
+    chmod +x ./bin/bird-mgmt
+fi
+
+# Run klish
+# -x: Config directory
+# -h: History file (optional)
+# -l: Lock file (optional)
+# -d: Dry run (check syntax)
+
+# Klish client connects to unix socket by default
+cmd="klish"
+
+if [ "$1" == "check" ]; then
+    $cmd --dry-run
+else
+    $cmd "$@"
+fi

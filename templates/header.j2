@@ -1,0 +1,21 @@
+# ============================================================================
+# BIRD Configuration Header
+# Generated from BR2 BGP Framework
+# DO NOT EDIT MANUALLY - Edit YAML files in /data and regenerate
+# ============================================================================
+
+# Log configuration
+log "/var/log/bird.log" all;
+
+# Router ID - use router_id from config
+router id {{ router_id }};
+
+# Global BGP configuration (optional - settings per protocol below)
+# protocol bgp {
+#     description "Global BGP Settings";
+#     local as {{ router.asn }};
+#     hold time {{ bgp.hold_time }};
+#     {% if bgp.graceful_restart %}
+#     graceful restart;
+#     {% endif %}
+# }

@@ -1,0 +1,173 @@
+# ============================================================================
+# STATIC ROUTES - Our Network Prefixes
+# Advertise company cone via static routes
+# ============================================================================
+
+# ============================================================================
+# NAMED PREFIX-LISTS (like Cisco ip prefix-list)
+# Generated from prefix_groups in prefixes.yaml
+# ============================================================================
+{% if prefix_groups %}
+# ----- IPv4 Prefix-Lists -----
+{% for group_name, group_config in prefix_groups.items() %}
+define {{ group_name | upper }}_V4 = [
+{%- if group_config.ipv4 %}
+{%- for prefix in group_config.ipv4 %}
+    {{ prefix }}{{ "," if not loop.last else "" }}
+{%- endfor %}
+{%- endif %}
+];
+{% endfor %}
+
+# ----- IPv6 Prefix-Lists -----
+{% for group_name, group_config in prefix_groups.items() %}
+define {{ group_name | upper }}_V6 = [
+{%- if group_config.ipv6 %}
+{%- for prefix in group_config.ipv6 %}
+    {{ prefix }}{{ "," if not loop.last else "" }}
+{%- endfor %}
+{%- endif %}
+];
+{% endfor %}
+{% endif %}
+
+# Aggregate prefix-lists for router_prefixes configuration
+# OWN_PREFIXES_V4 = all groups in router_prefixes.originate
+{% if own_prefixes_v4 %}
+define OWN_PREFIXES_V4 = [
+{%- for prefix in own_prefixes_v4 %}
+    {{ prefix }}{{ "," if not loop.last else "" }}
+{%- endfor %}
+];
+{% else %}
+define OWN_PREFIXES_V4 = [];
+{% endif %}
+
+# REMOTE_PREFIXES_V4 = all groups in router_prefixes.accept_ibgp
+{% if remote_own_prefixes_v4 %}
+define REMOTE_PREFIXES_V4 = [
+{%- for prefix in remote_own_prefixes_v4 %}
+    {{ prefix }}{{ "," if not loop.last else "" }}
+{%- endfor %}
+];
+{% else %}
+define REMOTE_PREFIXES_V4 = [];
+{% endif %}
+
+# Filter for static own prefixes - tags with large community
+filter static_own_export {
+    # Tag own prefixes with large community ({{ router['asn'] }}, 1, 1000)
+    bgp_large_community.add(({{ router['asn'] }}, 1, 1000));
+    accept;
+}
+
+protocol static static1 {
+    ipv4 {
+        export filter static_own_export;
+    };
+    
+    # Own Network Prefixes (IPv4)
+    {% if own_prefixes_v4 %}
+    {% for prefix in own_prefixes_v4 %}
+    route {{ prefix }} reject;
+    {% endfor %}
+    {% else %}
+    # No IPv4 prefixes configured
+    {% endif %}
+    
+    # Custom Static Routes (IPv4)
+    {% if static_routes.ipv4 %}
+    {% for route in static_routes.ipv4 %}
+    route {{ route.prefix }} via {{ route.via }};
+    {% endfor %}
+    {% endif %}
+}
+
+protocol static static1_v6 {
+    ipv6;
+    
+    # Own Network Prefixes (IPv6)
+    {% if own_prefixes_v6 %}
+    {% for prefix in own_prefixes_v6 %}
+    route {{ prefix }} reject;
+    {% endfor %}
+    {% else %}
+    # No IPv6 prefixes configured
+    {% endif %}
+    
+    # Custom Static Routes (IPv6)
+    {% if static_routes.ipv6 %}
+    {% for route in static_routes.ipv6 %}
+    route {{ route.prefix }} via {{ route.via }};
+    {% endfor %}
+    {% endif %}
+}
+
+# ============================================================================
+# BLACKHOLE ROUTES - For RTBH and DDoS Mitigation (IPv4)
+# ============================================================================
+
+protocol static blackhole_v4 {
+    ipv4;
+    
+{% if blackhole_routes_v4 %}
+{% for route in blackhole_routes_v4 %}
+    # {{ route.reason | default('No reason specified') }}
+    route {{ route.prefix }} blackhole;
+{% endfor %}
+{% else %}
+    # No IPv4 blackhole routes configured
+{% endif %}
+}
+
+# ============================================================================
+# BLACKHOLE ROUTES - For RTBH and DDoS Mitigation (IPv6)
+# ============================================================================
+
+protocol static blackhole_v6 {
+    ipv6;
+    
+{% if blackhole_routes_v6 %}
+{% for route in blackhole_routes_v6 %}
+    # {{ route.reason | default('No reason specified') }}
+    route {{ route.prefix }} blackhole;
+{% endfor %}
+{% else %}
+    # No IPv6 blackhole routes configured
+{% endif %}
+}
+
+# ============================================================================
+# DEVICE PROTOCOL - Required for interface scanning
+# ============================================================================
+
+protocol device {
+    scan time 10;
+}
+
+# ============================================================================
+# DIRECT PROTOCOL - Interface discovery
+# ============================================================================
+
+protocol direct direct1 {
+    ipv4;
+    ipv6;
+    interface "eno*", "eth*", "bond*", "lo";
+}
+
+# ============================================================================
+# KERNEL PROTOCOL - Sync with kernel routing table
+# ============================================================================
+
+protocol kernel kernel_v4 {
+    ipv4 {
+        export all;
+    };
+}
+
+protocol kernel kernel_v6 {
+    ipv6 {
+        export all;
+    };
+}
+

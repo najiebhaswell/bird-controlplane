@@ -1,0 +1,266 @@
+# ============================================================================
+# IPv6 EXPORT FILTER: {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_export_v6
+# Peer: {{ peer.description }} (AS{{ peer.asn }})
+# Type: {{ peer.type }}
+# Generated from YAML configuration
+# ============================================================================
+
+{% if peer.is_remote | default(false) and peer.type == "downstream" %}
+# SKIPPED: {{ peer_name }} is a remote downstream - no direct peering filter needed
+{% else %}
+filter {% if peer.type == "ibgp" %}ibgp_{% else %}ebgp_{% endif %}{{ peer_name }}_export_v6 {
+    # ========== REDISTRIBUTE STATIC/CONNECTED (Global IPv6) ==========
+    {% if peer.redistribute_static_v6 %}
+    # Redistribute static routes to this peer (IPv6)
+    if source = RTS_STATIC then accept;
+    {% endif %}
+    {% if peer.redistribute_connected_v6 %}
+    # Redistribute connected/direct routes to this peer (IPv6)
+    if source = RTS_DEVICE then accept;
+    {% endif %}
+
+    # ========== USER DEFINED ROUTE-MAP (Global IPv6) ==========
+    {% if rmap_export %}
+    # Call user-defined route-map function
+    if route_map_{{ rmap_export | replace("-", "_") }}_fn() then accept;
+    reject;
+    
+    {% else %}
+    
+    # ========== DEFAULT PER-TYPE LOGIC ==========
+    {% if peer.type == "ibgp" %}
+    # ========== iBGP IPv6 EXPORT ==========
+    {% if peer.localpref_export %}
+    bgp_local_pref = {{ peer.localpref_export }};
+    {% endif %}
+    {% if peer.med_export %}
+    bgp_med = {{ peer.med_export }};
+    {% endif %}
+    
+    # Per-prefix DOWNLOAD preference
+    {% if peer.priority_prefixes_export_v6 %}
+    {% for item in peer.priority_prefixes_export_v6 %}
+    if net ~ {{ item.prefix }} then {
+        bgp_local_pref = {{ item.localpref }};
+        accept;
+    }
+    {% endfor %}
+    {% endif %}
+    
+    # ========== iBGP ALLOWED PREFIX FILTERING (IPv6 EXPORT) ==========
+    {% if peer.export_allowed_prefix_lists %}
+    # Only export routes matching these prefix-lists (IPv6)
+    {% for prefix_list_name in peer.export_allowed_prefix_lists %}
+    {% if prefix_groups[prefix_list_name] is defined and prefix_groups[prefix_list_name].ipv6 is defined and prefix_groups[prefix_list_name].ipv6 %}
+    if (net ~ {{ prefix_list_name | upper }}_V6) then accept;
+    {% endif %}
+    {% endfor %}
+    # Reject everything else not in allowed prefix-lists
+    reject;
+    {% else %}
+    
+    # No export_allowed_prefix_lists defined - export static and BGP routes
+    if proto ~ "bgp_*" then accept;
+    if proto = "static1_v6" then accept;
+    # Also export own prefix if not covered
+    if source = RTS_DEVICE then accept;
+    
+    reject;
+    {% endif %}
+
+    {% elif peer.type == "upstream" %}
+    # ========== UPSTREAM IPv6 EXPORT ==========
+    
+    # ========== IPv6 BOGON/MARTIAN REJECTION (Defense-in-depth) ==========
+    if net ~ ::/8 then reject;
+    if net ~ 100::/64 then reject;
+    if net ~ 2001:db8::/32 then reject;
+    if net ~ fe80::/10 then reject;
+    if net ~ fc00::/7 then reject;
+    if net ~ ff00::/8 then reject;
+    
+    {% if peer.export_prefix_lists is defined %}
+    # ========== EXPORT BY PREFIX-LIST (from peer config) ==========
+    # Configured prefix-lists: {{ peer.export_prefix_lists | join(', ') }}
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    {% if prefix_groups[prefix_list_name] is defined and prefix_groups[prefix_list_name].ipv6 is defined and prefix_groups[prefix_list_name].ipv6 %}
+    # Export {{ prefix_list_name }} (IPv6)
+    if (net ~ {{ prefix_list_name | upper }}_V6) then accept;
+    {% endif %}
+    {% endfor %}
+    
+    {% else %}
+    # Only export our own IPv6 prefixes (validated against prefixes.yaml)
+    {% if own_prefixes_v6 %}
+    prefix set own_prefixes_v6;
+    own_prefixes_v6 = [
+    {%- for prefix in own_prefixes_v6 %}
+        {{ prefix }}{{ "," if not loop.last else "" }}
+    {%- endfor %}
+    ];
+    
+    # Accept own prefixes from local static routes
+    if (proto = "static1_v6") && (net ~ own_prefixes_v6) then accept;
+    
+    # Accept own prefixes originated from other AS55666 routers (via iBGP)
+    if (net ~ own_prefixes_v6) && (bgp_path.len = 0) then accept;
+    {% else %}
+    # WARNING: No own_prefixes_v6 defined - all static routes BLOCKED for safety
+    {% endif %}
+    {% endif %}
+    
+    # Export downstream customer routes with selective filtering
+    {% if downstream_peers %}
+    {% for ds_name, ds_config in downstream_peers.items() %}
+    {% if ds_config.prefix_export_rules_v6 is defined %}
+    # {{ ds_config.description | default(ds_name) }} - Per-prefix IPv6 export rules
+    {% for rule in ds_config.prefix_export_rules_v6 %}
+    {% if peer_name in rule.upstreams %}
+    if (net = {{ rule.prefix }}) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% endif %}
+    {% endfor %}
+    {% elif ds_config.export_to_upstreams is defined %}
+    # {{ ds_config.description | default(ds_name) }} - Selective export
+    {% if peer_name in ds_config.export_to_upstreams %}
+    if (bgp_large_community ~ [(55666, 4, 1)]) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% endif %}
+    {% else %}
+    # {{ ds_config.description | default(ds_name) }} - Export to all upstreams
+    if (bgp_large_community ~ [(55666, 4, 1)]) && (bgp_path.last = {{ ds_config.asn }}) then accept;
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    if (bgp_large_community ~ [(55666, 4, *)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% elif peer.type == "downstream" %}
+    # ========== DOWNSTREAM IPv6 EXPORT ==========
+    # Export default route
+    if net ~ ::/0 then accept;
+    
+    {% if peer.export_prefix_lists is defined %}
+    # Export by prefix-list (IPv6)
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    {% if prefix_groups[prefix_list_name] is defined and prefix_groups[prefix_list_name].ipv6 is defined and prefix_groups[prefix_list_name].ipv6 %}
+    if (net ~ {{ prefix_list_name | upper }}_V6) then accept;
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    # Export our own prefixes
+    if proto = "static1_v6" then accept;
+    
+    {% if own_prefixes_v6 %}
+    # Export own IPv6 prefixes from iBGP
+    if (net ~ OWN_PREFIXES_V6) then accept;
+    {% endif %}
+    {% endif %}
+    
+    # Do not export customer routes from other customers
+    if bgp_large_community ~ [({{ router['asn'] }}, 4, *)] then reject;
+    
+    reject;
+
+    {% elif peer.type == "ix" %}
+    # ========== IX IPv6 EXPORT ==========
+    # IX peering exports only own prefixes + downstream customers
+    
+    # ========== COMMUNITY-BASED ACTION CONTROL ==========
+    # No-export to this specific IX peer: (ASN, 100, PEER_ASN)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 100, {{ peer.asn }})]) then reject;
+    
+    # No-export to ALL IX: (ASN, 120, 0)
+    if (bgp_large_community ~ [({{ router['asn'] }}, 120, 0)]) then reject;
+    
+    # Prepend to this specific IX peer
+    if (bgp_large_community ~ [({{ router['asn'] }}, 101, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 102, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 103, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    # Prepend to ALL IX
+    if (bgp_large_community ~ [({{ router['asn'] }}, 121, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 122, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 123, 0)]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    {% if peer.export_prefix_lists is defined %}
+    # Export by prefix-list (IPv6)
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    {% if prefix_groups[prefix_list_name] is defined and prefix_groups[prefix_list_name].ipv6 is defined and prefix_groups[prefix_list_name].ipv6 %}
+    if (net ~ {{ prefix_list_name | upper }}_V6) then accept;
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    # Export own IPv6 prefixes
+    if (net ~ OWN_PREFIXES_V6) then accept;
+    
+    # Export downstream customer routes
+    if (bgp_large_community ~ [({{ router['asn'] }}, 4, 1)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% elif peer.type == "bilateral" %}
+    # ========== BILATERAL IPv6 EXPORT ==========
+    # Bilateral peering exports own prefixes + downstream customers
+    
+    # ========== COMMUNITY-BASED ACTION CONTROL ==========
+    if (bgp_large_community ~ [({{ router['asn'] }}, 100, {{ peer.asn }})]) then reject;
+    if (bgp_large_community ~ [({{ router['asn'] }}, 130, 0)]) then reject;
+    
+    # Prepend to this bilateral peer
+    if (bgp_large_community ~ [({{ router['asn'] }}, 101, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 102, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    if (bgp_large_community ~ [({{ router['asn'] }}, 103, {{ peer.asn }})]) then {
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+        bgp_path.prepend({{ router['asn'] }});
+    }
+    
+    {% if peer.export_prefix_lists is defined %}
+    # Export by prefix-list (IPv6)
+    {% for prefix_list_name in peer.export_prefix_lists %}
+    {% if prefix_groups[prefix_list_name] is defined and prefix_groups[prefix_list_name].ipv6 is defined and prefix_groups[prefix_list_name].ipv6 %}
+    if (net ~ {{ prefix_list_name | upper }}_V6) then accept;
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    # Export own IPv6 prefixes
+    if (net ~ OWN_PREFIXES_V6) then accept;
+    
+    # Export downstream customer routes
+    if (bgp_large_community ~ [({{ router['asn'] }}, 4, 1)]) then accept;
+    {% endif %}
+    
+    reject;
+
+    {% else %}
+    # Default deny
+    reject;
+    {% endif %}
+    {% endif %}
+}
+{% endif %}

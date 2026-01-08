@@ -1,0 +1,2246 @@
+#!/usr/bin/env python3
+"""
+BIRD Management CLI
+Comprehensive interface for operational team to manage prefixes, peers, and configuration.
+"""
+
+import yaml
+import sys
+import json
+import subprocess
+import os
+import re
+from pathlib import Path
+from datetime import datetime
+import argparse
+
+
+class BirdMgmtCLI:
+    def __init__(self, framework_dir):
+        self.framework_dir = Path(framework_dir)
+        self.config_dir = self.framework_dir / "config"
+        self.output_dir = self.framework_dir / "output"
+        
+        self.peers_file = self.config_dir / "peers.yaml"
+        self.prefixes_file = self.config_dir / "prefixes.yaml"
+        self.blackhole_file = self.config_dir / "blackhole.yaml"
+        self.router_file = self.config_dir / "router.yaml"
+        self.policy_file = self.config_dir / "policy.yaml"
+        
+        self.peers_data = self._load_yaml(self.peers_file)
+        self.prefixes_data = self._load_yaml(self.prefixes_file)
+        self.policy_data = self._load_yaml(self.policy_file)
+        self.router_data = self._load_yaml(self.router_file)
+
+    def _load_yaml(self, filepath):
+        if not filepath.exists(): return {}
+        with open(filepath, 'r') as f: return yaml.safe_load(f) or {}
+
+    def _save_yaml_unsafe(self, filepath, data):
+        """Save YAML file (Destroys comments) - Use only for simple files like blackhole"""
+        with open(filepath, 'w') as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def _get_bird_status(self):
+        status = {}
+        try:
+            result = subprocess.run(["sudo", "birdc", "show", "protocols", "all"], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0: return status
+            current_proto = None
+            for line in result.stdout.split('\n'):
+                if line and 'BGP' in line:
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        proto_name = parts[0]
+                        state = parts[-1] if parts[-1] not in ['---', 'master4'] else parts[-2]
+                        status[proto_name] = {"state": state, "import": "---", "export": "---"}
+                        current_proto = proto_name
+                elif current_proto and 'Routes:' in line:
+                    parts = line.split()
+                    for i, word in enumerate(parts):
+                        if word.startswith("imported") and i > 0: status[current_proto]["import"] = parts[i-1]
+                        if word.startswith("exported") and i > 0: status[current_proto]["export"] = parts[i-1]
+        except Exception: pass
+        return status
+
+    def show_peers(self, peer_type=None):
+        peers = self.peers_data.get("peers", {})
+        if peer_type and peer_type in peers: peers = {peer_type: peers[peer_type]}
+        bird_status = self._get_bird_status()
+        
+        print(f"{'Peer Key':<20} {'Protocol Name':<35} {'ASN':<8} {'Type':<12} {'Neighbor IP':<22} {'State':<15} {'Imp/Exp':<10}")
+        print("-" * 130)
+        
+        for ptype, plist in peers.items():
+            for name, config in plist.items():
+                # Use description as peer_name if available, else use IP-based name
+                if config.get("description"):
+                    peer_name = config["description"].replace(".", "_").replace("-", "_").replace(":", "_").lower()
+                else:
+                    peer_name = name.replace(".", "_").replace("-", "_").replace(":", "_")
+                
+                # Simplified prefix: ibgp_ or ebgp_
+                if config.get("type") == "ibgp":
+                    proto_name = f"ibgp_{peer_name}"
+                else:
+                    proto_name = f"ebgp_{peer_name}"
+
+                # Determine correct protocol name matching protocol.j2 logic
+                proto_name_v4 = proto_name
+                if config.get("neighbor_ip_v6") and config.get("neighbor_ip_v6") != config.get("neighbor_ip"):
+                    proto_name_v4 = f"{proto_name}_v4"
+
+                # V4
+                s = bird_status.get(proto_name_v4, {})
+                st = s.get("state", "---")
+                if st == "Established": st = f"\033[92m{st}\033[0m"
+                elif st in ["Idle", "Connect"]: st = f"\033[93m{st}\033[0m"
+                elif st == "---": st = f"\033[91mDown\033[0m"
+                display_type = "ibgp" if config.get("type") == "ibgp" else "ebgp"
+                print(f"{name:<20} {proto_name_v4:<35} {str(config.get('asn','')):<8} {display_type:<12} {str(config.get('neighbor_ip','')):<22} {st:<25} {s.get('import','-')}/{s.get('export','-')}")
+
+                # V6
+                if config.get("neighbor_ip_v6"):
+                    proto_name_v6 = f"{proto_name}_v6"
+                    s = bird_status.get(proto_name_v6, {})
+                    st = s.get("state", "---")
+                    if st == "Established": st = f"\033[92m{st}\033[0m"
+                    elif st in ["Idle", "Connect"]: st = f"\033[93m{st}\033[0m"
+                    elif st == "---": st = f"\033[91mDown\033[0m"
+                    print(f"{'':<20} {proto_name_v6:<35} {'':<8} {'':<12} {str(config.get('neighbor_ip_v6','')):<22} {st:<25} {s.get('import','-')}/{s.get('export','-')}")
+
+    def show_peer_detail(self, peer_ip):
+        """Show detailed information for a specific BGP peer"""
+        peers = self.peers_data.get("peers", {})
+        peer_config = None
+        
+        # Find peer by IP
+        for ptype, plist in peers.items():
+            if peer_ip in plist:
+                peer_config = plist[peer_ip]
+                break
+        
+        if not peer_config:
+            print(f"✗ Peer {peer_ip} not found")
+            return
+        
+        # Generate protocol name (matching bin/generate logic)
+        if peer_config.get("description"):
+            peer_name = peer_config["description"].replace(".", "_").replace("-", "_").replace(":", "_").lower()
+        else:
+            peer_name = peer_ip.replace(".", "_").replace("-", "_").replace(":", "_")
+        
+        proto_prefix = "ibgp_" if peer_config.get("type") == "ibgp" else "ebgp_"
+        proto_name = f"{proto_prefix}{peer_name}"
+        
+        # Show BIRD status directly
+        try:
+            result = subprocess.run(
+                ["sudo", "birdc", "-r", f"show protocols all {proto_name}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                print(result.stdout)
+            else:
+                print(f"✗ Unable to get BIRD status for {proto_name}")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+
+    def delete_peer(self, peer_ip):
+        """Delete a BGP peer from configuration"""
+        peers = self.peers_data.get("peers", {})
+        found = False
+        
+        # Find and remove peer
+        for ptype, plist in peers.items():
+            if peer_ip in plist:
+                del plist[peer_ip]
+                found = True
+                break
+        
+        if not found:
+            print(f"✗ Peer {peer_ip} not found")
+            return False
+        
+        # Save
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Deleted peer {peer_ip}")
+        return True
+
+    def set_peer_shutdown(self, peer_ip, shutdown=True):
+        """Set peer shutdown status (administratively disable/enable)"""
+        peers = self.peers_data.get("peers", {})
+        
+        for ptype, plist in peers.items():
+            if peer_ip in plist:
+                plist[peer_ip]["shutdown"] = shutdown
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                if shutdown:
+                    print(f"✓ Peer {peer_ip} shutdown (administratively disabled)")
+                else:
+                    print(f"✓ Peer {peer_ip} no shutdown (enabled)")
+                return True
+        
+        print(f"✗ Peer {peer_ip} not found")
+        return False
+
+    def show_blackhole(self):
+        data = self._load_yaml(self.blackhole_file)
+        v4 = data.get("blackhole_routes_v4", [])
+        v6 = data.get("blackhole_routes_v6", [])
+        
+        print(f"\n{'Prefix':<30} {'Reason':<30} {'Added':<15}")
+        print("-" * 80)
+        for r in v4 + v6:
+            print(f"{r['prefix']:<30} {r.get('reason',''):<30} {r.get('added_at','')[:10]:<15}")
+        if not v4 and not v6:
+            print("(No blackhole routes)")
+
+    def add_blackhole(self, prefix, reason="Manual"):
+        data = self._load_yaml(self.blackhole_file)
+        key = "blackhole_routes_v6" if ":" in prefix else "blackhole_routes_v4"
+        routes = data.get(key, []) or []
+        for r in routes:
+            if r["prefix"] == prefix:
+                print("Already exists"); return
+        routes.append({"prefix": prefix, "reason": reason, "added_at": datetime.now().isoformat()})
+        data[key] = routes
+        self._save_yaml_unsafe(self.blackhole_file, data)
+        print(f"✓ Added {prefix} to blackhole")
+
+    def remove_blackhole(self, prefix, reason=None, silent=False):
+        """Remove blackhole route from blackhole.yaml"""
+        if not silent:
+            print(f"Removing blackhole route: {prefix}...")
+        
+        data = self._load_yaml(self.blackhole_file)
+        
+        is_ipv6 = ":" in prefix
+        key = "blackhole_routes_v6" if is_ipv6 else "blackhole_routes_v4"
+        
+        original_len = len(data.get(key, []))
+        
+        # Remove by prefix
+        new_routes = [r for r in data.get(key, []) if r.get("prefix") != prefix]
+        
+        if len(new_routes) == original_len:
+            if not silent:
+                print("Not found")
+            return False
+            
+        data[key] = new_routes
+        self._save_yaml_unsafe(self.blackhole_file, data)
+        if not silent:
+            print(f"✓ Removed")
+        return True
+
+    def validate_config(self):
+        print("\n[Validating Configuration]")
+        try:
+            subprocess.run(
+                [sys.executable, str(self.framework_dir / "bin" / "generate")],
+                cwd=str(self.framework_dir), check=True, capture_output=True
+            )
+            print("✓ Generation successful")
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Generation failed: {e.stderr.decode()}")
+            return False
+
+        try:
+            subprocess.run(["bird", "-c", str(self.output_dir / "bird.conf"), "-p"], check=True, capture_output=True)
+            print("✓ BIRD Syntax Valid")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"✗ BIRD Syntax Invalid:\n{e.stderr.decode()}")
+            return False
+        except FileNotFoundError:
+            print("⚠ 'bird' command not found, skipping syntax check")
+            return True
+
+    def deploy(self):
+        if not self.validate_config():
+            print("Aborting deploy.")
+            return
+        try:
+            print("Deploying modular configuration...")
+            
+            # Backup existing config directory
+            backup_dir = f"/etc/bird.backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            subprocess.run(["sudo", "cp", "-r", "/etc/bird", backup_dir], check=False)
+            print(f"Backed up /etc/bird to {backup_dir}")
+            
+            # Clear stale files (remove old .conf files not in output, except bird.conf)
+            result = subprocess.run(["sudo", "ls", "/etc/bird"], capture_output=True, text=True)
+            output_files = {f.name for f in self.output_dir.glob("*.conf")}
+            for existing_file in result.stdout.strip().split("\n"):
+                if existing_file and existing_file.endswith(".conf") and existing_file not in output_files:
+                    subprocess.run(["sudo", "rm", "-f", f"/etc/bird/{existing_file}"], check=True)
+                    print(f"Removed stale: /etc/bird/{existing_file}")
+            
+            # Remove old subdirectories if they exist
+            for subdir in ["filters", "protocols", "prefixes"]:
+                subprocess.run(["sudo", "rm", "-rf", f"/etc/bird/{subdir}"], check=False)
+            
+            # Copy all .conf files directly to /etc/bird/
+            for f in self.output_dir.glob("*.conf"):
+                subprocess.run(["sudo", "cp", str(f), f"/etc/bird/{f.name}"], check=True)
+            
+            # Reload BIRD
+            subprocess.run(["sudo", "birdc", "configure"], check=True)
+            print("✓ Deployed modular config & Reloaded BIRD")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Deploy failed: {e}")
+
+    def add_prefix(self, group, prefix, is_ipv6=False):
+        print(f"Adding {'v6' if is_ipv6 else 'v4'} {prefix} to {group}...")
+        if not self.prefixes_file.exists(): print("prefixes.yaml not found"); return
+        with open(self.prefixes_file, 'r') as f: lines = f.readlines()
+        
+        new_lines = []
+        group_regex = re.compile(r'^\s+' + re.escape(group) + r':\s*$')
+        af_key = "ipv6" if is_ipv6 else "ipv4"
+        in_group = False
+        appended = False
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            new_lines.append(line)
+            if group_regex.match(line):
+                in_group = True
+            elif in_group:
+                if line.strip() == f"{af_key}:":
+                    new_lines.append(f"      - {prefix}\n")
+                    appended = True; in_group = False
+                elif line.strip() and not line.startswith("    ") and not line.startswith("      "):
+                     if not appended:
+                         new_lines.pop()
+                         new_lines.append(f"    {af_key}:\n")
+                         new_lines.append(f"      - {prefix}\n")
+                         new_lines.append(line)
+                         appended = True
+                     in_group = False
+            i += 1
+        
+        if not appended and in_group:
+             new_lines.append(f"    {af_key}:\n")
+             new_lines.append(f"      - {prefix}\n")
+             appended = True
+
+        if appended:
+            with open(self.prefixes_file, 'w') as f: f.writelines(new_lines)
+            print("✓ Added")
+        else:
+            print(f"✗ Group {group} not found")
+
+    def remove_prefix(self, group, prefix):
+        print(f"Removing {prefix} from {group}...")
+        with open(self.prefixes_file, 'r') as f: lines = f.readlines()
+        new_lines = []
+        group_regex = re.compile(r'^\s+' + re.escape(group) + r':\s*$')
+        in_group = False
+        found = False
+        
+        for line in lines:
+            if group_regex.match(line): in_group = True
+            elif in_group:
+                if line.strip() and not line.startswith("    ") and not line.startswith("      "): in_group = False
+                
+            if in_group and f"- {prefix}" in line:
+                print("✓ Removed line")
+                found = True
+                continue
+            new_lines.append(line)
+            
+        if found:
+            with open(self.prefixes_file, 'w') as f: f.writelines(new_lines)
+        else:
+            print("✗ Not found")
+
+    def inject_ipv6(self):
+        print("Injecting missing IPv6...")
+        with open(self.peers_file, 'r') as f: lines = f.readlines()
+        new_lines = []
+        counter=3000
+        matches=0
+        neighbor_regex = re.compile(r'^(\s+)neighbor_ip:\s+(.+)$')
+        
+        i=0
+        while i < len(lines):
+            line = lines[i]
+            new_lines.append(line)
+            m = neighbor_regex.match(line)
+            if m:
+                indent = m.group(1)
+                has_v6 = False
+                k = i+1
+                while k < len(lines):
+                     if f"{indent}neighbor_ip_v6:" in lines[k]: has_v6=True; break
+                     if lines[k].strip() and not lines[k].startswith(indent): break
+                     k+=1
+                if not has_v6:
+                     v6n = f"fd00:{counter}::1"
+                     v6l = f"fd00:{counter}::2"
+                     new_lines.append(f"{indent}neighbor_ip_v6: \"{v6n}\"\n")
+                     new_lines.append(f"{indent}local_ip_v6: \"{v6l}\"\n")
+                     matches+=1; counter+=1
+            i+=1
+        
+        if matches:
+            with open(self.peers_file, 'w') as f: f.writelines(new_lines)
+            print(f"✓ Injected {matches} peers")
+        else:
+            print("No injection needed")
+
+    def show_traffic_engineering(self):
+        te = self.prefixes_data.get("traffic_engineering", {})
+        print("\nTraffic Engineering Rules:\n" + "-"*50)
+        if "rules" not in te: print("No rules"); return
+        for i, rule in enumerate(te["rules"], 1):
+             print(f"{i}. {rule.get('name')}: {rule.get('description')}")
+             if "prefixes" in rule: print(f"   Prefixes: {', '.join(rule['prefixes'])}")
+             if "upstream_preference" in rule:
+                 print(f"   Pref: {rule['upstream_preference']}")
+
+    def failover_link(self, primary_peer, backup_peer):
+        print(f"Failover {primary_peer} -> {backup_peer}...")
+        p1, p2 = None, None
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if primary_peer in plist: p1 = plist[primary_peer]
+            if backup_peer in plist: p2 = plist[backup_peer]
+        
+        if not p1 or not p2: print("Peers not found"); return
+        
+        pref1 = p1.get("localpref_base", 100)
+        pref2 = p2.get("localpref_base", 100)
+        
+        p1["localpref_base"] = pref2 - 10
+        p2["localpref_base"] = pref1
+        
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Swapped preferences: {primary_peer} now {p1['localpref_base']}, {backup_peer} now {p2['localpref_base']}")
+
+    def set_localpref_import_prefix(self, prefix, peer_name, localpref):
+        print(f"Set Import Pref {prefix} via {peer_name} to {localpref}...")
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if "priority_prefixes_import" not in peer: peer["priority_prefixes_import"] = []
+                
+                for item in peer["priority_prefixes_import"]:
+                    if item["prefix"] == prefix:
+                        item["localpref"] = int(localpref)
+                        found = True; break
+                if not found:
+                    peer["priority_prefixes_import"].append({"prefix": prefix, "localpref": int(localpref)})
+                    found = True
+                
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                print("✓ Applied (Import/Upload)")
+                break
+        if not found: print("Peer not found")
+
+    def set_localpref_export_prefix(self, prefix, peer_name, localpref):
+        print(f"Set Export Pref {prefix} via {peer_name} to {localpref}...")
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if "priority_prefixes_export" not in peer: peer["priority_prefixes_export"] = []
+                
+                for item in peer["priority_prefixes_export"]:
+                    if item["prefix"] == prefix:
+                        item["localpref"] = int(localpref)
+                        found = True; break
+                if not found:
+                    peer["priority_prefixes_export"].append({"prefix": prefix, "localpref": int(localpref)})
+                    found = True
+                
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                print("✓ Applied (Export/Download)")
+                break
+        if not found: print("Peer not found")
+
+    def set_localpref_import_asn(self, asn, peer_name, localpref, ipv6=False):
+        """Set LocalPref for routes with specific ASN in AS PATH on import"""
+        asn = int(asn)
+        localpref = int(localpref)
+        key = "import_localpref_by_asn_v6" if ipv6 else "import_localpref_by_asn"
+        af = "v6" if ipv6 else "v4"
+        print(f"Set Import LocalPref ({af}) for ASN {asn} via {peer_name} to {localpref}...")
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key not in peer: peer[key] = []
+                
+                updated = False
+                for item in peer[key]:
+                    if item["asn"] == asn:
+                        item["localpref"] = localpref
+                        updated = True
+                        break
+                if not updated:
+                    peer[key].append({"asn": asn, "localpref": localpref})
+                
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                print(f"✓ Applied ({af}): Routes with ASN {asn} from {peer_name} get LocalPref {localpref}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def set_localpref_export_asn(self, asn, peer_name, localpref, ipv6=False):
+        """Set LocalPref for routes with specific ASN in AS PATH on export"""
+        asn = int(asn)
+        localpref = int(localpref)
+        key = "export_localpref_by_asn_v6" if ipv6 else "export_localpref_by_asn"
+        af = "v6" if ipv6 else "v4"
+        print(f"Set Export LocalPref ({af}) for ASN {asn} to {peer_name} to {localpref}...")
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key not in peer: peer[key] = []
+                
+                updated = False
+                for item in peer[key]:
+                    if item["asn"] == asn:
+                        item["localpref"] = localpref
+                        updated = True
+                        break
+                if not updated:
+                    peer[key].append({"asn": asn, "localpref": localpref})
+                
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                print(f"✓ Applied ({af}): Routes with ASN {asn} to {peer_name} get LocalPref {localpref}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def reject_import_prefix(self, peer_name, prefix):
+        """Add prefix to import reject list for a peer"""
+        is_ipv6 = ":" in prefix
+        key = "import_discard_prefixes_v6" if is_ipv6 else "import_discard_prefixes"
+        print(f"Rejecting import of {'v6' if is_ipv6 else 'v4'} {prefix} from {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key not in peer: peer[key] = []
+                if prefix not in peer[key]:
+                    peer[key].append(prefix)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Added {prefix} to {key}")
+                else:
+                    print(f"Already exists in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def allow_import_prefix(self, peer_name, prefix):
+        """Remove prefix from import reject list for a peer"""
+        is_ipv6 = ":" in prefix
+        key = "import_discard_prefixes_v6" if is_ipv6 else "import_discard_prefixes"
+        print(f"Allowing import of {'v6' if is_ipv6 else 'v4'} {prefix} from {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key in peer and prefix in peer[key]:
+                    peer[key].remove(prefix)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Removed {prefix} from {key}")
+                else:
+                    print(f"Not found in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def reject_export_prefix(self, peer_name, prefix):
+        """Add prefix to export reject list for a peer"""
+        is_ipv6 = ":" in prefix
+        key = "export_discard_prefixes_v6" if is_ipv6 else "export_discard_prefixes"
+        print(f"Rejecting export of {'v6' if is_ipv6 else 'v4'} {prefix} to {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key not in peer: peer[key] = []
+                if prefix not in peer[key]:
+                    peer[key].append(prefix)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Added {prefix} to {key}")
+                else:
+                    print(f"Already exists in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def allow_export_prefix(self, peer_name, prefix):
+        """Remove prefix from export reject list for a peer"""
+        is_ipv6 = ":" in prefix
+        key = "export_discard_prefixes_v6" if is_ipv6 else "export_discard_prefixes"
+        print(f"Allowing export of {'v6' if is_ipv6 else 'v4'} {prefix} to {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key in peer and prefix in peer[key]:
+                    peer[key].remove(prefix)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Removed {prefix} from {key}")
+                else:
+                    print(f"Not found in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def reject_import_asn(self, peer_name, asn, ipv6=False):
+        """Add ASN to import reject list for a peer"""
+        asn = int(asn)
+        key = "import_discard_asns_v6" if ipv6 else "import_discard_asns"
+        af = "v6" if ipv6 else "v4"
+        print(f"Rejecting import ({af}) of routes with ASN {asn} from {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key not in peer: peer[key] = []
+                if asn not in peer[key]:
+                    peer[key].append(asn)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Added ASN {asn} to {key}")
+                else:
+                    print(f"Already exists in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def allow_import_asn(self, peer_name, asn, ipv6=False):
+        """Remove ASN from import reject list for a peer"""
+        asn = int(asn)
+        key = "import_discard_asns_v6" if ipv6 else "import_discard_asns"
+        af = "v6" if ipv6 else "v4"
+        print(f"Allowing import ({af}) of routes with ASN {asn} from {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key in peer and asn in peer[key]:
+                    peer[key].remove(asn)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Removed ASN {asn} from {key}")
+                else:
+                    print(f"Not found in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def reject_export_asn(self, peer_name, asn, ipv6=False):
+        """Add ASN to export reject list"""
+        asn = int(asn)
+        key = "export_discard_asns_v6" if ipv6 else "export_discard_asns"
+        af = "v6" if ipv6 else "v4"
+        print(f"Rejecting export ({af}) of routes with ASN {asn} to {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key not in peer: peer[key] = []
+                if asn not in peer[key]:
+                    peer[key].append(asn)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Added ASN {asn} to {key}")
+                else:
+                    print(f"Already exists in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    def allow_export_asn(self, peer_name, asn, ipv6=False):
+        """Remove ASN from export reject list"""
+        asn = int(asn)
+        key = "export_discard_asns_v6" if ipv6 else "export_discard_asns"
+        af = "v6" if ipv6 else "v4"
+        print(f"Allowing export ({af}) of routes with ASN {asn} to {peer_name}...")
+        
+        found = False
+        for ptype, plist in self.peers_data.get("peers", {}).items():
+            if peer_name in plist:
+                peer = plist[peer_name]
+                if key in peer and asn in peer[key]:
+                    peer[key].remove(asn)
+                    self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                    print(f"✓ Removed ASN {asn} from {key}")
+                else:
+                    print(f"Not found in {key}")
+                found = True
+                break
+        if not found: print("Peer not found")
+
+    # === STATIC ROUTES ===
+    def show_static_routes(self):
+        data = self._load_yaml(self.router_file)
+        routes = data.get("static_routes", {})
+        v4 = routes.get("ipv4", []) or []
+        v6 = routes.get("ipv6", []) or []
+        
+        # Load blackhole
+        bh_data = self._load_yaml(self.blackhole_file)
+        bh_v4 = bh_data.get("blackhole_routes_v4", []) or []
+        bh_v6 = bh_data.get("blackhole_routes_v6", []) or []
+        
+        print(f"\n{'Prefix':<40} {'Via (Next-Hop)':<40}")
+        print("-" * 80)
+        for r in v4:
+            print(f"{r.get('prefix',''):<40} {r.get('via',''):<40}")
+        for r in bh_v4:
+            print(f"{r.get('prefix',''):<40} {'blackhole':<40}")
+            
+        for r in v6:
+            print(f"{r.get('prefix',''):<40} {r.get('via',''):<40}")
+        for r in bh_v6:
+            print(f"{r.get('prefix',''):<40} {'blackhole':<40}")
+            
+        if not v4 and not v6 and not bh_v4 and not bh_v6:
+            print("(No static routes)")
+
+    def add_static_route(self, prefix, via):
+        is_ipv6 = ":" in prefix
+        key = "ipv6" if is_ipv6 else "ipv4"
+        print(f"Adding static route: {prefix} via {via} ({'v6' if is_ipv6 else 'v4'})...")
+        
+        data = self._load_yaml(self.router_file)
+        if "static_routes" not in data: data["static_routes"] = {}
+        if key not in data["static_routes"]: data["static_routes"][key] = []
+        
+        routes = data["static_routes"][key]
+        for r in routes:
+            if r.get("prefix") == prefix:
+                print(f"Already exists (via {r.get('via')})")
+                return
+        
+        routes.append({"prefix": prefix, "via": via})
+        self._save_yaml_unsafe(self.router_file, data)
+        print(f"✓ Added")
+
+    def remove_static_route(self, prefix):
+        is_ipv6 = ":" in prefix
+        key = "ipv6" if is_ipv6 else "ipv4"
+        print(f"Removing static route: {prefix} ({'v6' if is_ipv6 else 'v4'})...")
+        
+        # Try removing from router.yaml (normal static)
+        data = self._load_yaml(self.router_file)
+        routes = data.get("static_routes", {}).get(key, []) or []
+        new_routes = [r for r in routes if r.get("prefix") != prefix]
+        
+        removed_static = False
+        if len(new_routes) != len(routes):
+            data["static_routes"][key] = new_routes
+            self._save_yaml_unsafe(self.router_file, data)
+            removed_static = True
+            
+        # Try removing from blackhole.yaml
+        removed_blackhole = self.remove_blackhole(prefix, silent=True)
+        
+        if removed_static or removed_blackhole:
+            print(f"✓ Removed")
+        else:
+            print("Not found")
+
+    # === IXP PEER MANAGEMENT ===
+    def show_ix_peers(self):
+        """Show IXP peers with status"""
+        peers = self.peers_data.get("peers", {}).get("ix", {})
+        if not peers:
+            print("\n(No IXP peers configured)")
+            return
+        
+        bird_status = self._get_bird_status()
+        print(f"\n{'Name':<20} {'ASN':<8} {'IX':<15} {'Neighbor IP':<22} {'LocalPref':<10} {'State':<15}")
+        print("-" * 100)
+        
+        for name, config in peers.items():
+            proto_name = f"ebgp_ix_{name}"
+            s = bird_status.get(proto_name, {})
+            st = s.get("state", "---")
+            if st == "Established": st = f"\033[92m{st}\033[0m"
+            elif st == "---": st = f"\033[91mDown\033[0m"
+            
+            ix_name = config.get("ix_name", "-")
+            localpref = config.get("localpref_import", 200)
+            print(f"{name:<20} {config.get('asn',''):<8} {ix_name:<15} {config.get('neighbor_ip',''):<22} {localpref:<10} {st:<25}")
+
+    def add_ix_peer(self, name, asn, neighbor_ip, local_ip, ix_name, description=None, 
+                   localpref=200, neighbor_ip_v6=None, local_ip_v6=None, interface=None):
+        """Add IXP peer to peers.yaml"""
+        print(f"Adding IXP peer: {name} (AS{asn}) at {ix_name}...")
+        
+        peers = self.peers_data.get("peers", {})
+        if "ix" not in peers:
+            peers["ix"] = {}
+        
+        if name in peers["ix"]:
+            print(f"✗ Peer {name} already exists")
+            return False
+        
+        peer_config = {
+            "description": description or f"{ix_name} Peer AS{asn}",
+            "asn": int(asn),
+            "neighbor_ip": neighbor_ip,
+            "local_ip": local_ip,
+            "type": "ix",
+            "ix_name": ix_name,
+            "localpref_import": int(localpref),
+            "graceful_restart": True
+        }
+        
+        if interface:
+            peer_config["interface"] = interface
+        if neighbor_ip_v6:
+            peer_config["neighbor_ip_v6"] = neighbor_ip_v6
+        if local_ip_v6:
+            peer_config["local_ip_v6"] = local_ip_v6
+            
+        peers["ix"][name] = peer_config
+        self.peers_data["peers"] = peers
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Added IXP peer {name} (LocalPref: {localpref})")
+        return True
+
+    def remove_ix_peer(self, name):
+        """Remove IXP peer from peers.yaml"""
+        print(f"Removing IXP peer: {name}...")
+        
+        peers = self.peers_data.get("peers", {}).get("ix", {})
+        if name not in peers:
+            print(f"✗ Peer {name} not found")
+            return False
+        
+        del self.peers_data["peers"]["ix"][name]
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Removed IXP peer {name}")
+        return True
+
+    # === BILATERAL PEER MANAGEMENT ===
+    def show_bilateral_peers(self):
+        """Show bilateral (content provider) peers with status"""
+        peers = self.peers_data.get("peers", {}).get("bilateral", {})
+        if not peers:
+            print("\n(No bilateral peers configured)")
+            return
+        
+        bird_status = self._get_bird_status()
+        print(f"\n{'Name':<20} {'ASN':<8} {'Description':<25} {'Neighbor IP':<22} {'LocalPref':<10} {'State':<15}")
+        print("-" * 110)
+        
+        for name, config in peers.items():
+            proto_name = f"ebgp_bilateral_{name}"
+            s = bird_status.get(proto_name, {})
+            st = s.get("state", "---")
+            if st == "Established": st = f"\033[92m{st}\033[0m"
+            elif st == "---": st = f"\033[91mDown\033[0m"
+            
+            desc = config.get("description", "-")[:24]
+            localpref = config.get("localpref_import", 350)
+            print(f"{name:<20} {config.get('asn',''):<8} {desc:<25} {config.get('neighbor_ip',''):<22} {localpref:<10} {st:<25}")
+
+    def add_bilateral_peer(self, name, asn, neighbor_ip, local_ip, description=None,
+                          localpref=350, neighbor_ip_v6=None, local_ip_v6=None, 
+                          max_prefixes=100, export_prefix_lists=None):
+        """Add bilateral (content provider) peer to peers.yaml"""
+        print(f"Adding bilateral peer: {name} (AS{asn})...")
+        
+        peers = self.peers_data.get("peers", {})
+        if "bilateral" not in peers:
+            peers["bilateral"] = {}
+        
+        if name in peers["bilateral"]:
+            print(f"✗ Peer {name} already exists")
+            return False
+        
+        peer_config = {
+            "description": description or f"Bilateral Peer AS{asn}",
+            "asn": int(asn),
+            "neighbor_ip": neighbor_ip,
+            "local_ip": local_ip,
+            "type": "bilateral",
+            "localpref_import": int(localpref),
+            "max_prefixes": int(max_prefixes),
+            "graceful_restart": True
+        }
+        
+        if neighbor_ip_v6:
+            peer_config["neighbor_ip_v6"] = neighbor_ip_v6
+        if local_ip_v6:
+            peer_config["local_ip_v6"] = local_ip_v6
+        if export_prefix_lists:
+            peer_config["export_prefix_lists"] = export_prefix_lists
+            
+        peers["bilateral"][name] = peer_config
+        self.peers_data["peers"] = peers
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Added bilateral peer {name} (LocalPref: {localpref})")
+        return True
+
+    def remove_bilateral_peer(self, name):
+        """Remove bilateral peer from peers.yaml"""
+        print(f"Removing bilateral peer: {name}...")
+        
+        peers = self.peers_data.get("peers", {}).get("bilateral", {})
+        if name not in peers:
+            print(f"✗ Peer {name} not found")
+            return False
+        
+        del self.peers_data["peers"]["bilateral"][name]
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Removed bilateral peer {name}")
+        return True
+
+    # === GENERIC PEER MANAGEMENT ===
+    def create_peer_generic(self, ip, group):
+        """Create a stub peer entry using IP as the key"""
+        print(f"Creating peer {ip} in group {group}...")
+        
+        peers = self.peers_data.get("peers", {})
+        if group not in peers: peers[group] = {}
+        
+        # Check if exists in any group
+        for g in peers:
+            if ip in peers[g]:
+                print(f"✗ Peer {ip} already exists in group {g}")
+                return False
+
+        # Initialize minimal config
+        peers[group][ip] = {
+            "neighbor_ip": ip,
+            "type": group,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        self.peers_data["peers"] = peers
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        print(f"✓ Created peer {ip}")
+        return True
+
+    def set_peer_attribute(self, ip, attr, value):
+        """Set a single attribute for a peer identified by IP (key)"""
+        print(f"Setting {attr} = {value} for {ip}...")
+        
+        found = False
+        peers = self.peers_data.get("peers", {})
+        
+        for group in peers:
+            if ip in peers[group]:
+                peers[group][ip][attr] = value
+                found = True
+                break
+        
+        if found:
+            self._save_yaml_unsafe(self.peers_file, self.peers_data)
+            print(f"✓ Updated")
+            return True
+        else:
+            print(f"✗ Peer {ip} not found")
+            return False
+
+    def add_peer_list_item(self, ip, attr, item):
+        """Add an item to a list attribute for a peer"""
+        print(f"Adding {item} to {attr} for {ip}...")
+        
+        found = False
+        peers = self.peers_data.get("peers", {})
+        
+        for group in peers:
+            if ip in peers[group]:
+                peer = peers[group][ip]
+                if attr not in peer or peer[attr] is None:
+                    peer[attr] = []
+                
+                if isinstance(peer[attr], list):
+                    if item not in peer[attr]:
+                        peer[attr].append(item)
+                        found = True
+                    else:
+                        print(f"Item {item} already in {attr}")
+                        return True
+                else:
+                    print(f"Attribute {attr} is not a list (is {type(peer[attr])})")
+                    return False
+                break
+        
+        if found:
+            self._save_yaml_unsafe(self.peers_file, self.peers_data)
+            print(f"✓ Added")
+            return True
+        else:
+            if not found: print(f"✗ Peer {ip} not found or error")
+            return False
+
+    def remove_peer_list_item(self, ip, attr, item):
+        """Remove an item from a list attribute for a peer"""
+        print(f"Removing {item} from {attr} for {ip}...")
+        
+        found = False
+        peers = self.peers_data.get("peers", {})
+        
+        for group in peers:
+            if ip in peers[group]:
+                peer = peers[group][ip]
+                if attr in peer and isinstance(peer[attr], list):
+                    if item in peer[attr]:
+                        peer[attr].remove(item)
+                        found = True
+                    else:
+                        print(f"Item {item} not in {attr}")
+                        return True
+                break
+        
+        if found:
+            self._save_yaml_unsafe(self.peers_file, self.peers_data)
+            print(f"✓ Removed")
+            return True
+        else:
+            print(f"✗ Peer {ip} not found or item not present")
+            return False
+
+    # === POLICY LIST COMMANDS (for CLI tab completion) ===
+    def list_prefix_lists(self, ipv6=False):
+        """List prefix-list names for tab completion"""
+        key = "prefix_lists_v6" if ipv6 else "prefix_lists"
+        for name in self.policy_data.get(key, {}).keys():
+            print(name)
+
+    def list_route_maps(self):
+        """List route-map names for tab completion"""
+        for name in self.policy_data.get("route_maps", {}).keys():
+            print(name)
+
+    def list_community_lists(self):
+        """List community-list names for tab completion"""
+        for name in self.policy_data.get("community_lists", {}).keys():
+            print(name)
+
+    def list_large_community_lists(self):
+        """List large-community-list names for tab completion"""
+        for name in self.policy_data.get("large_community_lists", {}).keys():
+            print(name)
+
+    def list_prefix_list_rules(self, name, ipv6=False):
+        """List rule numbers for a specific prefix-list (for tab completion)"""
+        key = "prefix_lists_v6" if ipv6 else "prefix_lists"
+        plist = self.policy_data.get(key, {}).get(name, [])
+        for rule in plist:
+            print(rule.get("rule", ""))
+
+    def show_policy_object(self, obj_type, name):
+        """Show details of a specific policy object"""
+        key_map = {
+            "prefix-list": "prefix_lists",
+            "prefix-list6": "prefix_lists_v6",
+            "community-list": "community_lists",
+            "large-community-list": "large_community_lists",
+            "route-map": "route_maps"
+        }
+        
+        key = key_map.get(obj_type)
+        if not key:
+            print(f"Unknown object type: {obj_type}")
+            return
+
+        if key not in self.policy_data or name not in self.policy_data[key]:
+            print(f"{obj_type} '{name}' not found")
+            return
+
+        print(f"{obj_type} {name}:")
+        items = self.policy_data[key][name]
+        
+        # Sort by rule number
+        if isinstance(items, list):
+            items.sort(key=lambda x: x.get("rule", 0))
+            for item in items:
+                rule = item.get("rule", "")
+                action = item.get("action", "")
+                
+                details = []
+                if "prefix" in item: details.append(f"prefix {item['prefix']}")
+                if "regex" in item: details.append(f"regex {item['regex']}")
+                if "match" in item: details.append(f"match {item['match']}")
+                
+                detail_str = ", ".join(details)
+                print(f"  rule {rule} {action} {detail_str}")
+        else:
+            # Handle non-list objects if any (future proofing)
+            print(yaml.dump(items))
+
+    def delete_policy_object(self, obj_type, name):
+        """Delete an entire policy object (e.g., prefix-list)"""
+        key_map = {
+            "prefix-list": "prefix_lists",
+            "prefix-list6": "prefix_lists_v6",
+            "community-list": "community_lists",
+            "large-community-list": "large_community_lists",
+            "as-path-list": "as_path_lists",
+            "route-map": "route_maps"
+        }
+        
+        key = key_map.get(obj_type)
+        if not key: return
+        
+        if key not in self.policy_data or name not in self.policy_data[key]:
+            print(f"{obj_type} {name} not found")
+            return
+        
+        # Check dependencies before deletion
+        deps = self._check_policy_dependencies(obj_type, name)
+        if deps:
+            print(f"✗ Cannot delete {obj_type} {name} - still in use by:")
+            for dep in deps:
+                print(f"  - {dep}")
+            return
+        
+        del self.policy_data[key][name]
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Deleted {obj_type} {name}")
+
+    def _check_policy_dependencies(self, obj_type, name):
+        """Check if a policy object is used by other objects"""
+        deps = []
+        
+        if obj_type == "route-map":
+            # Check if route-map is used by any BGP peer
+            peers = self.peers_data.get("peers", {})
+            for ptype, plist in peers.items():
+                for peer_ip, config in plist.items():
+                    # Check IPv4
+                    af_v4 = config.get("address_family_ipv4_unicast", {})
+                    if af_v4.get("route_map_import") == name:
+                        deps.append(f"BGP neighbor {peer_ip} (ipv4 import)")
+                    if af_v4.get("route_map_export") == name:
+                        deps.append(f"BGP neighbor {peer_ip} (ipv4 export)")
+                    # Check IPv6
+                    af_v6 = config.get("address_family_ipv6_unicast", {})
+                    if af_v6.get("route_map_import") == name:
+                        deps.append(f"BGP neighbor {peer_ip} (ipv6 import)")
+                    if af_v6.get("route_map_export") == name:
+                        deps.append(f"BGP neighbor {peer_ip} (ipv6 export)")
+        
+        elif obj_type in ["prefix-list", "prefix-list6"]:
+            # Check if prefix-list is used in any route-map
+            route_maps = self.policy_data.get("route_maps", {})
+            for rmap_name, rules in route_maps.items():
+                for rule in rules:
+                    if rule.get("match_prefix_list") == name:
+                        deps.append(f"route-map {rmap_name} rule {rule.get('rule')}")
+                    if rule.get("match_prefix_list6") == name:
+                        deps.append(f"route-map {rmap_name} rule {rule.get('rule')}")
+        
+        elif obj_type in ["community-list", "large-community-list"]:
+            # Check if community-list is used in any route-map
+            route_maps = self.policy_data.get("route_maps", {})
+            for rmap_name, rules in route_maps.items():
+                for rule in rules:
+                    if rule.get("match_community_list") == name:
+                        deps.append(f"route-map {rmap_name} rule {rule.get('rule')}")
+                    if rule.get("match_large_community_list") == name:
+                        deps.append(f"route-map {rmap_name} rule {rule.get('rule')}")
+        
+        elif obj_type == "as-path-list":
+            # Check if as-path-list is used in any route-map
+            route_maps = self.policy_data.get("route_maps", {})
+            for rmap_name, rules in route_maps.items():
+                for rule in rules:
+                    if rule.get("match_as_path_list") == name:
+                        deps.append(f"route-map {rmap_name} rule {rule.get('rule')}")
+        
+        return deps
+
+    def delete_policy_rule(self, obj_type, name, rule):
+        """Delete a specific rule from a policy object"""
+        key_map = {
+            "prefix-list": "prefix_lists",
+            "prefix-list6": "prefix_lists_v6",
+            "community-list": "community_lists",
+            "large-community-list": "large_community_lists",
+            "as-path-list": "as_path_lists",
+            "route-map": "route_maps"
+        }
+        
+        key = key_map.get(obj_type)
+        if not key: return
+        
+        if key in self.policy_data and name in self.policy_data[key]:
+            items = self.policy_data[key][name]
+            initial_len = len(items)
+            # Remove rule with matching number
+            self.policy_data[key][name] = [r for r in items if str(r.get("rule")) != str(rule)]
+            
+            if len(self.policy_data[key][name]) < initial_len:
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Deleted rule {rule} from {obj_type} {name}")
+            else:
+                print(f"Rule {rule} not found in {obj_type} {name}")
+        else:
+            print(f"{obj_type} {name} not found")
+
+    # === VYOS-STYLE POLICY MANAGEMENT ===
+    def set_prefix_list_action(self, name, rule, action, ipv6=False):
+        """Set action for a prefix-list rule (VyOS style)"""
+        key = "prefix_lists_v6" if ipv6 else "prefix_lists"
+        print(f"Setting rule {rule} in {key}/{name}: action={action}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        # Check if rule already exists
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["action"] = action
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} action")
+                return True
+        
+        # Create new rule with action only
+        self.policy_data[key][name].append({
+            "rule": int(rule),
+            "action": action
+        })
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with action={action}")
+        return True
+
+    def set_prefix_list_prefix(self, name, rule, prefix, ipv6=False):
+        """Set prefix for a prefix-list rule (VyOS style)"""
+        key = "prefix_lists_v6" if ipv6 else "prefix_lists"
+        print(f"Setting rule {rule} in {key}/{name}: prefix={prefix}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        # Check if rule already exists
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["prefix"] = prefix
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} prefix")
+                return True
+        
+        # Create new rule with prefix only (default action=permit)
+        self.policy_data[key][name].append({
+            "rule": int(rule),
+            "action": "permit",
+            "prefix": prefix
+        })
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with prefix={prefix}")
+        return True
+
+    def add_prefix_list_rule(self, name, rule, action, prefix, ipv6=False):
+        """Add a complete rule to a prefix-list (VyOS style) - legacy"""
+        key = "prefix_lists_v6" if ipv6 else "prefix_lists"
+        print(f"Adding rule {rule} to {key}/{name}: {action} {prefix}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        # Check if rule already exists
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["action"] = action
+                r["prefix"] = prefix
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule}")
+                return True
+        
+        # Add new rule
+        self.policy_data[key][name].append({
+            "rule": int(rule),
+            "action": action,
+            "prefix": prefix
+        })
+        # Sort by rule number
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule}")
+        return True
+
+    # === COMMUNITY LIST (VyOS style) ===
+    def set_community_list_action(self, name, rule, action):
+        """Set action for a community-list rule"""
+        key = "community_lists"
+        print(f"Setting community-list {name} rule {rule}: action={action}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["action"] = action
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} action")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": action})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with action={action}")
+        return True
+
+    def set_community_list_regex(self, name, rule, regex):
+        """Set regex pattern for a community-list rule"""
+        key = "community_lists"
+        print(f"Setting community-list {name} rule {rule}: regex={regex}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["regex"] = regex
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} regex")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": "permit", "regex": regex})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with regex={regex}")
+        return True
+
+    # === LARGE COMMUNITY LIST (VyOS style) ===
+    def set_large_community_list_action(self, name, rule, action):
+        """Set action for a large-community-list rule"""
+        key = "large_community_lists"
+        print(f"Setting large-community-list {name} rule {rule}: action={action}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["action"] = action
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} action")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": action})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with action={action}")
+        return True
+
+    def set_large_community_list_regex(self, name, rule, regex):
+        """Set regex pattern for a large-community-list rule"""
+        key = "large_community_lists"
+        print(f"Setting large-community-list {name} rule {rule}: regex={regex}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["regex"] = regex
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} regex")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": "permit", "regex": regex})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with regex={regex}")
+        return True
+
+    # === AS-PATH LIST ===
+    def set_as_path_list_action(self, name, rule, action):
+        """Set action for an as-path-list rule"""
+        key = "as_path_lists"
+        print(f"Setting as-path-list {name} rule {rule}: action={action}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["action"] = action
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} action")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": action})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with action={action}")
+        return True
+
+    def set_as_path_list_as(self, name, rule, asn):
+        """Set AS number for path matching (contains)"""
+        key = "as_path_lists"
+        print(f"Setting as-path-list {name} rule {rule}: as={asn}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["as"] = int(asn)
+                r.pop("origin", None)  # Remove origin if exists
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} as={asn}")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": "permit", "as": int(asn)})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with as={asn}")
+        return True
+
+    def set_as_path_list_origin(self, name, rule, asn):
+        """Set origin AS number for path matching (bgp_path.last)"""
+        key = "as_path_lists"
+        print(f"Setting as-path-list {name} rule {rule}: origin={asn}...")
+        
+        if key not in self.policy_data:
+            self.policy_data[key] = {}
+        if name not in self.policy_data[key]:
+            self.policy_data[key][name] = []
+        
+        for r in self.policy_data[key][name]:
+            if r.get("rule") == int(rule):
+                r["origin"] = int(asn)
+                r.pop("as", None)  # Remove as if exists
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule} origin={asn}")
+                return True
+        
+        self.policy_data[key][name].append({"rule": int(rule), "action": "permit", "origin": int(asn)})
+        self.policy_data[key][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule} with origin={asn}")
+        return True
+
+    def add_route_map_rule(self, name, rule, action):
+        """Add a rule to a route-map (VyOS style)"""
+        print(f"Adding route-map {name} rule {rule}: {action}...")
+        
+        if "route_maps" not in self.policy_data:
+            self.policy_data["route_maps"] = {}
+        if name not in self.policy_data["route_maps"]:
+            self.policy_data["route_maps"][name] = []
+        
+        # Check if rule already exists
+        for r in self.policy_data["route_maps"][name]:
+            if r.get("rule") == int(rule):
+                r["action"] = action
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Updated rule {rule}")
+                return True
+        
+        # Add new rule
+        self.policy_data["route_maps"][name].append({
+            "rule": int(rule),
+            "action": action
+        })
+        self.policy_data["route_maps"][name].sort(key=lambda x: x.get("rule", 0))
+        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+        print(f"✓ Added rule {rule}")
+        return True
+
+    def set_route_map_match(self, name, rule, match_type, value):
+        """Set match condition on a route-map rule"""
+        print(f"Setting route-map {name} rule {rule} match {match_type} = {value}...")
+        
+        if "route_maps" not in self.policy_data or name not in self.policy_data["route_maps"]:
+            print(f"✗ Route-map {name} not found")
+            return False
+        
+        for r in self.policy_data["route_maps"][name]:
+            if r.get("rule") == int(rule):
+                r[f"match_{match_type}"] = value
+                self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                print(f"✓ Set match condition")
+                return True
+        
+        print(f"✗ Rule {rule} not found in route-map {name}")
+        return False
+
+        print(f"✗ Rule {rule} not found in route-map {name}")
+        return False
+
+    def set_route_map_set(self, name, rule, attr, value):
+        """Set 'set' action on a route-map rule"""
+        print(f"Setting route-map {name} rule {rule} set {attr} = {value}...")
+        
+        if "route_maps" not in self.policy_data or name not in self.policy_data["route_maps"]:
+            print(f"✗ Route-map {name} not found")
+            return False
+        
+        for r in self.policy_data["route_maps"][name]:
+            if r.get("rule") == int(rule):
+                key = f"set_{attr}"
+                
+                # For community and large_community, support adding to list
+                if attr in ["community", "large_community"]:
+                    if value == "clear":
+                        # Clear all communities
+                        r[f"clear_{attr}"] = True
+                        r.pop(key, None)  # Remove any set values
+                        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                        print(f"✓ Set clear {attr}")
+                        return True
+                    else:
+                        # Add to list (or create list)
+                        if key not in r:
+                            r[key] = []
+                        if not isinstance(r[key], list):
+                            r[key] = [r[key]]  # Convert single value to list
+                        if value not in r[key]:
+                            r[key].append(value)
+                        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                        print(f"✓ Added {attr} {value}")
+                        return True
+                else:
+                    # For other attributes, just set the value
+                    r[key] = value
+                    self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                    print(f"✓ Set {attr} = {value}")
+                    return True
+        
+        print(f"✗ Rule {rule} not found in route-map {name}")
+        return False
+    
+    def unset_route_map_set(self, name, rule, attr, value=None):
+        """Remove a 'set' action from a route-map rule"""
+        if "route_maps" not in self.policy_data or name not in self.policy_data["route_maps"]:
+            print(f"✗ Route-map {name} not found")
+            return False
+        
+        for r in self.policy_data["route_maps"][name]:
+            if r.get("rule") == int(rule):
+                key = f"set_{attr}"
+                
+                if attr in ["community", "large_community"] and value and key in r:
+                    # Remove specific community from list
+                    if isinstance(r[key], list) and value in r[key]:
+                        r[key].remove(value)
+                        if not r[key]:  # Remove empty list
+                            del r[key]
+                        self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                        print(f"✓ Removed {attr} {value}")
+                        return True
+                elif key in r:
+                    del r[key]
+                    self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                    print(f"✓ Removed set {attr}")
+                    return True
+                elif f"clear_{attr}" in r:
+                    del r[f"clear_{attr}"]
+                    self._save_yaml_unsafe(self.policy_file, self.policy_data)
+                    print(f"✓ Removed clear {attr}")
+                    return True
+                
+        print(f"✗ Rule {rule} not found or {attr} not set")
+        return False
+
+    def set_system_as(self, asn):
+        """Set system AS number (VyOS style)"""
+        print(f"Setting system-as to {asn}...")
+        self.router_data["asn"] = int(asn)
+        self._save_yaml_unsafe(self.router_file, self.router_data)
+        print(f"✓ Set system-as to {asn}")
+        return True
+
+    def set_router_id(self, router_id):
+        """Set router-id"""
+        print(f"Setting router-id to {router_id}...")
+        self.router_data["router_id"] = router_id
+        self._save_yaml_unsafe(self.router_file, self.router_data)
+        print(f"✓ Set router-id to {router_id}")
+        return True
+
+    def set_neighbor_address_family(self, ip, af, direction, route_map):
+        """Set address-family route-map for a neighbor"""
+        print(f"Setting neighbor {ip} address-family {af} route-map {direction} {route_map}...")
+        
+        peers = self.peers_data.get("peers", {})
+        for group in peers:
+            if ip in peers[group]:
+                peer = peers[group][ip]
+                af_key = f"address_family_{af.replace('-', '_')}"
+                if af_key not in peer:
+                    peer[af_key] = {}
+                peer[af_key][f"route_map_{direction}"] = route_map
+                
+                # Auto-enable IPv6 when configuring ipv6-unicast address family
+                if af == "ipv6-unicast":
+                    peer["ipv6_enabled"] = True
+                    
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                print(f"✓ Set")
+                return True
+        
+        print(f"✗ Peer {ip} not found")
+        return False
+
+    def set_neighbor_redistribute(self, ip, af, redistribute_type, enable=True):
+        """Set redistribute static/connected for a neighbor"""
+        print(f"Setting neighbor {ip} address-family {af} redistribute {redistribute_type} = {enable}...")
+        
+        peers = self.peers_data.get("peers", {})
+        for group in peers:
+            if ip in peers[group]:
+                peer = peers[group][ip]
+                # Determine key based on address family
+                if af == "ipv4-unicast":
+                    key = f"redistribute_{redistribute_type}"
+                else:  # ipv6-unicast
+                    key = f"redistribute_{redistribute_type}_v6"
+                    # Auto-enable IPv6 when configuring ipv6 address family
+                    if enable:
+                        peer["ipv6_enabled"] = True
+                
+                if enable:
+                    peer[key] = True
+                else:
+                    peer.pop(key, None)
+                
+                self._save_yaml_unsafe(self.peers_file, self.peers_data)
+                status = "enabled" if enable else "disabled"
+                print(f"✓ Redistribute {redistribute_type} {status}")
+                return True
+        
+        print(f"✗ Peer {ip} not found")
+        return False
+
+    # === AUTO PREFIX GENERATION ===
+    def update_prefixes(self, customer_name=None):
+        """Generate prefix lists from IRR using bgpq4 for downstream customers"""
+        print("\n[Updating Prefix Lists from IRR]")
+        
+        downstream_peers = self.peers_data.get("peers", {}).get("downstream", {})
+        if not downstream_peers:
+            print("No downstream peers configured")
+            return
+        
+        # Filter by customer_name if specified
+        if customer_name:
+            if customer_name not in downstream_peers:
+                print(f"✗ Customer {customer_name} not found")
+                return
+            downstream_peers = {customer_name: downstream_peers[customer_name]}
+        
+        output_file = self.config_dir / "prefixes.yaml"
+        prefixes_data = self._load_yaml(output_file)
+        if "prefix_groups" not in prefixes_data:
+            prefixes_data["prefix_groups"] = {}
+        
+        for name, config in downstream_peers.items():
+            if not config.get("auto_prefix", False):
+                print(f"  Skipping {name} (auto_prefix not enabled)")
+                continue
+            
+            asn = config.get("asn")
+            as_set = config.get("as_set", f"AS{asn}")
+            downstream_asns = config.get("downstream_asns", [])
+            
+            print(f"\n  Processing {name} (AS{asn})...")
+            
+            # Collect all ASNs to query
+            asns_to_query = [as_set]
+            for ds_asn in downstream_asns:
+                asns_to_query.append(f"AS{ds_asn}")
+            
+            all_prefixes_v4 = []
+            all_prefixes_v6 = []
+            
+            for query_obj in asns_to_query:
+                print(f"    Querying {query_obj}...")
+                
+                # Query IPv4 prefixes
+                try:
+                    result = subprocess.run(
+                        ["bgpq4", "-4", "-b", "-l", "prefixes", query_obj],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        # Parse bgpq4 output (format: prefixes = [ ... ])
+                        output = result.stdout.strip()
+                        if "prefixes = [" in output:
+                            # Extract prefixes between [ and ]
+                            start = output.find("[") + 1
+                            end = output.rfind("]")
+                            if start > 0 and end > start:
+                                prefix_str = output[start:end]
+                                for line in prefix_str.split(","):
+                                    prefix = line.strip().strip("'\"")
+                                    if prefix and "/" in prefix:
+                                        all_prefixes_v4.append(prefix)
+                except subprocess.TimeoutExpired:
+                    print(f"      ⚠ Timeout querying {query_obj} (IPv4)")
+                except Exception as e:
+                    print(f"      ⚠ Error: {e}")
+                
+                # Query IPv6 prefixes
+                try:
+                    result = subprocess.run(
+                        ["bgpq4", "-6", "-b", "-l", "prefixes", query_obj],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        output = result.stdout.strip()
+                        if "prefixes = [" in output:
+                            start = output.find("[") + 1
+                            end = output.rfind("]")
+                            if start > 0 and end > start:
+                                prefix_str = output[start:end]
+                                for line in prefix_str.split(","):
+                                    prefix = line.strip().strip("'\"")
+                                    if prefix and "/" in prefix:
+                                        all_prefixes_v6.append(prefix)
+                except subprocess.TimeoutExpired:
+                    print(f"      ⚠ Timeout querying {query_obj} (IPv6)")
+                except Exception as e:
+                    print(f"      ⚠ Error: {e}")
+            
+            # Deduplicate and sort
+            all_prefixes_v4 = sorted(list(set(all_prefixes_v4)))
+            all_prefixes_v6 = sorted(list(set(all_prefixes_v6)))
+            
+            # Update prefix_groups
+            group_name = f"{name}_prefixes"
+            prefixes_data["prefix_groups"][group_name] = {
+                "description": f"Auto-generated prefixes for {config.get('description', name)}",
+                "auto_generated": True,
+                "source_asns": [asn] + downstream_asns,
+                "ipv4": all_prefixes_v4,
+                "ipv6": all_prefixes_v6
+            }
+            
+            print(f"    ✓ Found {len(all_prefixes_v4)} IPv4, {len(all_prefixes_v6)} IPv6 prefixes")
+            
+            # Update peer config to use this prefix list
+            if "import_allowed_prefix_lists" not in self.peers_data["peers"]["downstream"][name]:
+                self.peers_data["peers"]["downstream"][name]["import_allowed_prefix_lists"] = []
+            
+            if group_name not in self.peers_data["peers"]["downstream"][name]["import_allowed_prefix_lists"]:
+                self.peers_data["peers"]["downstream"][name]["import_allowed_prefix_lists"].append(group_name)
+        
+        # Save updated configs
+        self._save_yaml_unsafe(output_file, prefixes_data)
+        self._save_yaml_unsafe(self.peers_file, self.peers_data)
+        
+        print(f"\n✓ Prefix lists updated in {output_file}")
+        print("Run './bin/generate && ./bin/bird-mgmt deploy' to apply changes")
+
+    # === ROLLBACK ===
+    def list_backups(self):
+        """List available backup files in /etc/bird/"""
+        print("\nAvailable backups in /etc/bird/:")
+        print("-" * 60)
+        try:
+            result = subprocess.run(
+                ["sudo", "ls", "-la", "/etc/bird/"],
+                capture_output=True, text=True, check=True
+            )
+            backups = []
+            for line in result.stdout.split('\n'):
+                if 'bird.conf.backup-' in line:
+                    parts = line.split()
+                    if len(parts) >= 9:
+                        filename = parts[-1]
+                        size = parts[4]
+                        date = ' '.join(parts[5:8])
+                        backups.append((filename, size, date))
+            
+            if not backups:
+                print("(No backups found)")
+                return []
+            
+            for i, (name, size, date) in enumerate(backups, 1):
+                print(f"  {i}. {name}  ({size} bytes, {date})")
+            return [b[0] for b in backups]
+        except subprocess.CalledProcessError as e:
+            print(f"Error listing backups: {e}")
+            return []
+
+    def rollback(self, backup_name=None):
+        """Rollback to a previous config backup"""
+        backups = self.list_backups()
+        
+        if not backups:
+            print("\nNo backups available to rollback.")
+            return
+        
+        if backup_name:
+            # Use specified backup
+            if backup_name not in backups:
+                # Check if it's a number index
+                try:
+                    idx = int(backup_name) - 1
+                    if 0 <= idx < len(backups):
+                        backup_name = backups[idx]
+                    else:
+                        print(f"Invalid backup index: {backup_name}")
+                        return
+                except ValueError:
+                    print(f"Backup not found: {backup_name}")
+                    return
+        else:
+            # Use latest backup (last in sorted list)
+            backup_name = backups[-1]
+            print(f"\nUsing latest backup: {backup_name}")
+        
+        backup_path = f"/etc/bird/{backup_name}"
+        
+        try:
+            # Backup current config before rollback
+            current_backup = f"/etc/bird/bird.conf.pre-rollback-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            subprocess.run(["sudo", "cp", "/etc/bird/bird.conf", current_backup], check=True)
+            print(f"Backed up current config to {current_backup}")
+            
+            # Restore backup
+            subprocess.run(["sudo", "cp", backup_path, "/etc/bird/bird.conf"], check=True)
+            print(f"Restored {backup_name} to /etc/bird/bird.conf")
+            
+            # Reload BIRD
+            subprocess.run(["sudo", "birdc", "configure"], check=True)
+            print("✓ Rollback completed and BIRD reloaded")
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Rollback failed: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="BIRD Manager")
+    subparsers = parser.add_subparsers(dest="command")
+    
+    subparsers.add_parser("show-peers", help="Show Peers")
+    p_show_peer_detail = subparsers.add_parser("show-peer-detail", help="Show peer detail")
+    p_show_peer_detail.add_argument("ip", help="Peer IP address")
+    subparsers.add_parser("status", help="Show Status")
+    subparsers.add_parser("validate", help="Validate")
+    subparsers.add_parser("deploy", help="Deploy")
+    subparsers.add_parser("inject-ipv6", help="Inject IPv6")
+    
+    # Rollback
+    subparsers.add_parser("list-backups", help="List available config backups")
+    p_rollback = subparsers.add_parser("rollback", help="Rollback to previous config")
+    p_rollback.add_argument("backup", nargs="?", help="Backup name or index (default: latest)")
+
+    
+    p_add = subparsers.add_parser("add-prefix", help="Add Prefix")
+    p_add.add_argument("group"); p_add.add_argument("prefix"); p_add.add_argument("--ipv6", action="store_true")
+
+    p_rem = subparsers.add_parser("remove-prefix", help="Remove Prefix")
+    p_rem.add_argument("group"); p_rem.add_argument("prefix")
+
+    subparsers.add_parser("show-blackhole", help="Show Blackholes")
+    p_bh = subparsers.add_parser("add-blackhole", help="Add Blackhole")
+    p_bh.add_argument("prefix"); p_bh.add_argument("reason", nargs="?")
+    
+    p_rbh = subparsers.add_parser("remove-blackhole", help="Remove Blackhole")
+    p_rbh.add_argument("prefix")
+
+    subparsers.add_parser("show-te", help="Show Traffic Engineering")
+    
+    p_delete_peer = subparsers.add_parser("delete-peer", help="Delete BGP peer")
+    p_delete_peer.add_argument("ip", help="Peer IP address")
+    
+    p_shutdown_peer = subparsers.add_parser("shutdown-peer", help="Shutdown BGP peer")
+    p_shutdown_peer.add_argument("ip", help="Peer IP address")
+    
+    p_no_shutdown_peer = subparsers.add_parser("no-shutdown-peer", help="Enable BGP peer")
+    p_no_shutdown_peer.add_argument("ip", help="Peer IP address")
+    
+    # Static Routes
+    subparsers.add_parser("show-static-routes", help="Show Static Routes")
+    p_asr = subparsers.add_parser("add-static-route", help="Add Static Route")
+    p_asr.add_argument("prefix"); p_asr.add_argument("via")
+    p_rsr = subparsers.add_parser("remove-static-route", help="Remove Static Route")
+    p_rsr.add_argument("prefix")
+
+    # Failover / TE
+    p_fail = subparsers.add_parser("failover", help="Failover peers")
+    p_fail.add_argument("primary"); p_fail.add_argument("backup")
+
+    p_imp = subparsers.add_parser("set-localpref-import-prefix", help="Set Import Pref by Prefix")
+    p_imp.add_argument("prefix"); p_imp.add_argument("peer"); p_imp.add_argument("localpref")
+
+    p_exp = subparsers.add_parser("set-localpref-export-prefix", help="Set Export Pref by Prefix")
+    p_exp.add_argument("prefix"); p_exp.add_argument("peer"); p_exp.add_argument("localpref")
+
+    # Reject/Allow Prefix Import/Export
+    p_rej_imp = subparsers.add_parser("reject-import-prefix", help="Reject prefix import from peer")
+    p_rej_imp.add_argument("peer"); p_rej_imp.add_argument("prefix")
+
+    p_all_imp = subparsers.add_parser("allow-import-prefix", help="Allow prefix import from peer (remove reject)")
+    p_all_imp.add_argument("peer"); p_all_imp.add_argument("prefix")
+
+    p_rej_exp = subparsers.add_parser("reject-export-prefix", help="Reject prefix export to peer")
+    p_rej_exp.add_argument("peer"); p_rej_exp.add_argument("prefix")
+
+    p_all_exp = subparsers.add_parser("allow-export-prefix", help="Allow prefix export to peer (remove reject)")
+    p_all_exp.add_argument("peer"); p_all_exp.add_argument("prefix")
+
+    # Reject/Allow ASN Import/Export (with --ipv6 flag)
+    p_rej_imp_asn = subparsers.add_parser("reject-import-asn", help="Reject routes with ASN from peer")
+    p_rej_imp_asn.add_argument("peer"); p_rej_imp_asn.add_argument("asn"); p_rej_imp_asn.add_argument("--ipv6", action="store_true")
+
+    p_all_imp_asn = subparsers.add_parser("allow-import-asn", help="Allow routes with ASN from peer (remove reject)")
+    p_all_imp_asn.add_argument("peer"); p_all_imp_asn.add_argument("asn"); p_all_imp_asn.add_argument("--ipv6", action="store_true")
+
+    p_rej_exp_asn = subparsers.add_parser("reject-export-asn", help="Reject export of routes with ASN to peer")
+    p_rej_exp_asn.add_argument("peer"); p_rej_exp_asn.add_argument("asn"); p_rej_exp_asn.add_argument("--ipv6", action="store_true")
+
+    p_all_exp_asn = subparsers.add_parser("allow-export-asn", help="Allow export of routes with ASN to peer (remove reject)")
+    p_all_exp_asn.add_argument("peer"); p_all_exp_asn.add_argument("asn"); p_all_exp_asn.add_argument("--ipv6", action="store_true")
+
+    # Set LocalPref by ASN (with --ipv6 flag)
+    p_lp_imp_asn = subparsers.add_parser("set-localpref-import-asn", help="Set LocalPref for routes with ASN on import")
+    p_lp_imp_asn.add_argument("asn"); p_lp_imp_asn.add_argument("peer"); p_lp_imp_asn.add_argument("localpref"); p_lp_imp_asn.add_argument("--ipv6", action="store_true")
+
+    p_lp_exp_asn = subparsers.add_parser("set-localpref-export-asn", help="Set LocalPref for routes with ASN on export")
+    p_lp_exp_asn.add_argument("asn"); p_lp_exp_asn.add_argument("peer"); p_lp_exp_asn.add_argument("localpref"); p_lp_exp_asn.add_argument("--ipv6", action="store_true")
+
+    # IXP Peer Management
+    subparsers.add_parser("show-ix-peers", help="Show IXP peers")
+    p_add_ix = subparsers.add_parser("add-ix-peer", help="Add IXP peer")
+    p_add_ix.add_argument("name", help="Peer name (e.g., openixp_rs)")
+    p_add_ix.add_argument("--asn", required=True, help="Peer AS number")
+    p_add_ix.add_argument("--neighbor", required=True, help="Neighbor IP address")
+    p_add_ix.add_argument("--local", required=True, help="Local IP address")
+    p_add_ix.add_argument("--ix", required=True, help="IX name (e.g., openixp, iix)")
+    p_add_ix.add_argument("--description", help="Peer description")
+    p_add_ix.add_argument("--localpref", type=int, default=200, help="LocalPref (default: 200)")
+    p_add_ix.add_argument("--neighbor-v6", help="IPv6 neighbor address")
+    p_add_ix.add_argument("--local-v6", help="IPv6 local address")
+    p_add_ix.add_argument("--interface", help="Interface name")
+    
+    p_rem_ix = subparsers.add_parser("remove-ix-peer", help="Remove IXP peer")
+    p_rem_ix.add_argument("name", help="Peer name")
+
+    # Bilateral Peer Management
+    subparsers.add_parser("show-bilateral-peers", help="Show bilateral (content provider) peers")
+    p_add_bi = subparsers.add_parser("add-bilateral-peer", help="Add bilateral peer (content provider)")
+    p_add_bi.add_argument("name", help="Peer name (e.g., cloudflare, akamai)")
+    p_add_bi.add_argument("--asn", required=True, help="Peer AS number")
+    p_add_bi.add_argument("--neighbor", required=True, help="Neighbor IP address")
+    p_add_bi.add_argument("--local", required=True, help="Local IP address")
+    p_add_bi.add_argument("--description", help="Peer description")
+    p_add_bi.add_argument("--localpref", type=int, default=350, help="LocalPref (default: 350)")
+    p_add_bi.add_argument("--neighbor-v6", help="IPv6 neighbor address")
+    p_add_bi.add_argument("--local-v6", help="IPv6 local address")
+    p_add_bi.add_argument("--max-prefixes", type=int, default=100, help="Max prefixes (default: 100)")
+    
+    p_rem_bi = subparsers.add_parser("remove-bilateral-peer", help="Remove bilateral peer")
+    p_rem_bi.add_argument("name", help="Peer name")
+
+    # === GENERIC PEER MANAGEMENT (FRR Style) ===
+    p_create_peer = subparsers.add_parser("create-peer", help="Create a new peer (generic)")
+    p_create_peer.add_argument("ip", help="Neighbor IP address (used as name if name not provided)")
+    p_create_peer.add_argument("--group", required=True, choices=["upstream", "downstream", "ix", "bilateral", "intercity", "backbone"], help="Peer group/type")
+    
+    p_set_asn = subparsers.add_parser("set-peer-asn", help="Set peer ASN")
+    p_set_asn.add_argument("ip", help="Neighbor IP (key)")
+    p_set_asn.add_argument("asn", help="AS Number")
+
+    p_set_desc = subparsers.add_parser("set-peer-description", help="Set peer description")
+    p_set_desc.add_argument("ip", help="Neighbor IP (key)")
+    p_set_desc.add_argument("description", help="Description")
+
+    p_set_local = subparsers.add_parser("set-peer-local-ip", help="Set local IP")
+    p_set_local.add_argument("ip", help="Neighbor IP (key)")
+    p_set_local.add_argument("local_ip", help="Local IP")
+
+    p_add_list = subparsers.add_parser("add-peer-list-item", help="Add item to peer list attribute")
+    p_add_list.add_argument("ip", help="Neighbor IP (key)")
+    p_add_list.add_argument("attr", help="Attribute name")
+    p_add_list.add_argument("item", help="Item value")
+
+    p_rem_list = subparsers.add_parser("remove-peer-list-item", help="Remove item from peer list attribute")
+    p_rem_list.add_argument("ip", help="Neighbor IP (key)")
+    p_rem_list.add_argument("attr", help="Attribute name")
+    p_rem_list.add_argument("item", help="Item value")
+
+    p_set_shutdown = subparsers.add_parser("set-peer-shutdown", help="Shutdown peer")
+    p_set_shutdown.add_argument("ip", help="Neighbor IP (key)")
+    p_set_shutdown.add_argument("--enable", action="store_true", help="No shutdown (enable)")
+
+
+    p_set_gen = subparsers.add_parser("set-peer-attribute", help="Set generic peer attribute")
+    p_set_gen.add_argument("ip", help="Neighbor IP (key)")
+    p_set_gen.add_argument("attr", help="Attribute name")
+    p_set_gen.add_argument("value", help="Attribute value")
+
+    # === VYOS-STYLE POLICY COMMANDS ===
+    p_add_plist = subparsers.add_parser("add-prefix-list-rule", help="Add prefix-list rule (VyOS style)")
+    p_add_plist.add_argument("name", help="Prefix-list name")
+    p_add_plist.add_argument("rule", help="Rule number")
+    p_add_plist.add_argument("action", choices=["permit", "deny"], help="Action")
+    p_add_plist.add_argument("prefix", help="Prefix (CIDR)")
+    p_add_plist.add_argument("--ipv6", action="store_true", help="IPv6 prefix-list")
+
+    p_set_plist_action = subparsers.add_parser("set-prefix-list-action", help="Set prefix-list rule action")
+    p_set_plist_action.add_argument("name", help="Prefix-list name")
+    p_set_plist_action.add_argument("rule", help="Rule number")
+    p_set_plist_action.add_argument("action", choices=["permit", "deny"], help="Action")
+    p_set_plist_action.add_argument("--ipv6", action="store_true", help="IPv6 prefix-list")
+
+    p_set_plist_prefix = subparsers.add_parser("set-prefix-list-prefix", help="Set prefix-list rule prefix")
+    p_set_plist_prefix.add_argument("name", help="Prefix-list name")
+    p_set_plist_prefix.add_argument("rule", help="Rule number")
+    p_set_plist_prefix.add_argument("prefix", help="Prefix (CIDR)")
+    p_set_plist_prefix.add_argument("--ipv6", action="store_true", help="IPv6 prefix-list")
+
+    # Community List
+    p_clist_action = subparsers.add_parser("set-community-list-action", help="Set community-list rule action")
+    p_clist_action.add_argument("name", help="Community-list name")
+    p_clist_action.add_argument("rule", help="Rule number")
+    p_clist_action.add_argument("action", choices=["permit", "deny"], help="Action")
+
+    p_clist_regex = subparsers.add_parser("set-community-list-regex", help="Set community-list rule regex")
+    p_clist_regex.add_argument("name", help="Community-list name")
+    p_clist_regex.add_argument("rule", help="Rule number")
+    p_clist_regex.add_argument("regex", help="Regex pattern (e.g., 65000:100)")
+
+    # Large Community List
+    p_lclist_action = subparsers.add_parser("set-large-community-list-action", help="Set large-community-list rule action")
+    p_lclist_action.add_argument("name", help="Large-community-list name")
+    p_lclist_action.add_argument("rule", help="Rule number")
+    p_lclist_action.add_argument("action", choices=["permit", "deny"], help="Action")
+
+    p_lclist_regex = subparsers.add_parser("set-large-community-list-regex", help="Set large-community-list rule regex")
+    p_lclist_regex.add_argument("name", help="Large-community-list name")
+    p_lclist_regex.add_argument("rule", help="Rule number")
+    p_lclist_regex.add_argument("regex", help="Regex pattern (e.g., 65000:0:100)")
+
+    p_aspath_action = subparsers.add_parser("set-as-path-list-action", help="Set as-path-list rule action")
+    p_aspath_action.add_argument("name", help="AS-path-list name")
+    p_aspath_action.add_argument("rule", help="Rule number")
+    p_aspath_action.add_argument("action", choices=["permit", "deny"], help="Action")
+
+    p_aspath_as = subparsers.add_parser("set-as-path-list-as", help="Set as-path-list AS (contains)")
+    p_aspath_as.add_argument("name", help="AS-path-list name")
+    p_aspath_as.add_argument("rule", help="Rule number")
+    p_aspath_as.add_argument("asn", help="AS number")
+
+    p_aspath_origin = subparsers.add_parser("set-as-path-list-origin", help="Set as-path-list origin AS")
+    p_aspath_origin.add_argument("name", help="AS-path-list name")
+    p_aspath_origin.add_argument("rule", help="Rule number")
+    p_aspath_origin.add_argument("asn", help="Origin AS number")
+
+    p_add_rmap = subparsers.add_parser("add-route-map-rule", help="Add route-map rule (VyOS style)")
+    p_add_rmap.add_argument("name", help="Route-map name")
+    p_add_rmap.add_argument("rule", help="Rule number")
+    p_add_rmap.add_argument("action", choices=["permit", "deny"], help="Action")
+
+    p_set_rmap_match = subparsers.add_parser("set-route-map-match", help="Set route-map match condition")
+    p_set_rmap_match.add_argument("name", help="Route-map name")
+    p_set_rmap_match.add_argument("rule", help="Rule number")
+    p_set_rmap_match.add_argument("match_type", help="Match type (e.g., prefix_list, prefix_list6)")
+
+    p_set_rmap_match.add_argument("value", help="Match value")
+
+    p_set_rmap_set = subparsers.add_parser("set-route-map-set", help="Set route-map set action")
+    p_set_rmap_set.add_argument("name", help="Route-map name")
+    p_set_rmap_set.add_argument("rule", help="Rule number")
+    p_set_rmap_set.add_argument("attr", help="Attribute name (community, large_community, local_pref)")
+    p_set_rmap_set.add_argument("value", help="Attribute value")
+
+    p_set_sysas = subparsers.add_parser("set-system-as", help="Set system AS number (VyOS style)")
+    p_set_sysas.add_argument("asn", help="AS Number")
+
+    p_set_rid = subparsers.add_parser("set-router-id", help="Set router-id")
+    p_set_rid.add_argument("router_id", help="Router ID (IPv4 format)")
+
+    p_set_af = subparsers.add_parser("set-neighbor-address-family", help="Set neighbor address-family route-map")
+    p_set_af.add_argument("ip", help="Neighbor IP")
+    p_set_af.add_argument("af", choices=["ipv4-unicast", "ipv6-unicast"], help="Address family")
+    p_set_af.add_argument("direction", choices=["import", "export"], help="Route-map direction")
+    p_set_af.add_argument("route_map", help="Route-map name")
+
+    p_set_redist = subparsers.add_parser("set-neighbor-redistribute", help="Set neighbor redistribute")
+    p_set_redist.add_argument("ip", help="Neighbor IP")
+    p_set_redist.add_argument("af", choices=["ipv4-unicast", "ipv6-unicast"], help="Address family")
+    p_set_redist.add_argument("redistribute_type", choices=["static", "connected"], help="Redistribute type")
+    p_set_redist.add_argument("--disable", action="store_true", help="Disable redistribute")
+
+    # List commands for tab completion
+    subparsers.add_parser("list-prefix-lists", help="List prefix-list names")
+    subparsers.add_parser("list-prefix-lists6", help="List IPv6 prefix-list names")
+    subparsers.add_parser("list-route-maps", help="List route-map names")
+    subparsers.add_parser("list-community-lists", help="List community-list names")
+    subparsers.add_parser("list-large-community-lists", help="List large-community-list names")
+
+    p_list_pl_rules = subparsers.add_parser("list-prefix-list-rules", help="List rule numbers in a prefix-list")
+    p_list_pl_rules.add_argument("name", help="Prefix-list name")
+    p_list_pl_rules.add_argument("--ipv6", action="store_true", help="IPv6 prefix-list")
+
+    # Show commands
+    p_show_plist = subparsers.add_parser("show-prefix-list", help="Show prefix-list details")
+    p_show_plist.add_argument("name", help="Prefix-list name")
+
+    p_show_plist6 = subparsers.add_parser("show-prefix-list6", help="Show IPv6 prefix-list details")
+    p_show_plist6.add_argument("name", help="IPv6 prefix-list name")
+
+    p_show_clist = subparsers.add_parser("show-community-list", help="Show community-list details")
+    p_show_clist.add_argument("name", help="Community-list name")
+
+    p_show_lclist = subparsers.add_parser("show-large-community-list", help="Show large-community-list details")
+    p_show_lclist.add_argument("name", help="Large-community-list name")
+
+    p_show_rmap = subparsers.add_parser("show-route-map", help="Show route-map details")
+    p_show_rmap.add_argument("name", help="Route-map name")
+
+    # Delete commands
+    p_del_obj = subparsers.add_parser("delete-policy-object", help="Delete policy object")
+    p_del_obj.add_argument("type", choices=["prefix-list", "prefix-list6", "community-list", "large-community-list", "route-map"], help="Object type")
+    p_del_obj.add_argument("name", help="Object name")
+
+    p_del_rule = subparsers.add_parser("delete-policy-rule", help="Delete policy rule")
+    p_del_rule.add_argument("type", choices=["prefix-list", "prefix-list6", "community-list", "large-community-list", "route-map"], help="Object type")
+    p_del_rule.add_argument("name", help="Object name")
+    p_del_rule.add_argument("rule", help="Rule number")
+
+    # Auto Prefix Generation
+    p_upd_pfx = subparsers.add_parser("update-prefixes", help="Generate prefix lists from IRR using bgpq4")
+    p_upd_pfx.add_argument("customer", nargs="?", help="Customer name (optional, default: all)")
+
+    args = parser.parse_args()
+    if not args.command: parser.print_help(); return
+
+    cli = BirdMgmtCLI(Path(__file__).parent.parent)
+    
+    cmd = args.command
+    if cmd == "show-peers": cli.show_peers()
+    elif cmd == "show-peer-detail": cli.show_peer_detail(args.ip)
+    elif cmd == "status": cli.show_peers()
+    elif cmd == "validate": cli.validate_config()
+    elif cmd == "deploy": cli.deploy()
+    elif cmd == "list-backups": cli.list_backups()
+    elif cmd == "rollback": cli.rollback(args.backup)
+    elif cmd == "inject-ipv6": cli.inject_ipv6()
+    elif cmd == "add-prefix": cli.add_prefix(args.group, args.prefix, args.ipv6)
+    elif cmd == "remove-prefix": cli.remove_prefix(args.group, args.prefix)
+    elif cmd == "show-blackhole": cli.show_blackhole()
+    elif cmd == "add-blackhole": cli.add_blackhole(args.prefix, args.reason)
+    elif cmd == "remove-blackhole": cli.remove_blackhole(args.prefix)
+    elif cmd == "show-te": cli.show_traffic_engineering()
+    elif cmd == "failover": cli.failover_link(args.primary, args.backup)
+    elif cmd == "set-localpref-import-prefix": cli.set_localpref_import_prefix(args.prefix, args.peer, args.localpref)
+    elif cmd == "set-localpref-export-prefix": cli.set_localpref_export_prefix(args.prefix, args.peer, args.localpref)
+    elif cmd == "reject-import-prefix": cli.reject_import_prefix(args.peer, args.prefix)
+    elif cmd == "allow-import-prefix": cli.allow_import_prefix(args.peer, args.prefix)
+    elif cmd == "reject-export-prefix": cli.reject_export_prefix(args.peer, args.prefix)
+    elif cmd == "allow-export-prefix": cli.allow_export_prefix(args.peer, args.prefix)
+    elif cmd == "reject-import-asn": cli.reject_import_asn(args.peer, args.asn, args.ipv6)
+    elif cmd == "allow-import-asn": cli.allow_import_asn(args.peer, args.asn, args.ipv6)
+    elif cmd == "reject-export-asn": cli.reject_export_asn(args.peer, args.asn, args.ipv6)
+    elif cmd == "allow-export-asn": cli.allow_export_asn(args.peer, args.asn, args.ipv6)
+    elif cmd == "set-localpref-import-asn": cli.set_localpref_import_asn(args.asn, args.peer, args.localpref, args.ipv6)
+    elif cmd == "set-localpref-export-asn": cli.set_localpref_export_asn(args.asn, args.peer, args.localpref, args.ipv6)
+    elif cmd == "show-static-routes": cli.show_static_routes()
+    elif cmd == "add-static-route": cli.add_static_route(args.prefix, args.via)
+    elif cmd == "remove-static-route": cli.remove_static_route(args.prefix)
+    elif cmd == "delete-peer": cli.delete_peer(args.ip)
+    elif cmd == "shutdown-peer": cli.set_peer_shutdown(args.ip, True)
+    elif cmd == "no-shutdown-peer": cli.set_peer_shutdown(args.ip, False)
+    # IXP Peer Management
+    elif cmd == "show-ix-peers": cli.show_ix_peers()
+    elif cmd == "add-ix-peer": 
+        cli.add_ix_peer(args.name, args.asn, args.neighbor, args.local, args.ix,
+                       description=args.description, localpref=args.localpref,
+                       neighbor_ip_v6=getattr(args, 'neighbor_v6', None),
+                       local_ip_v6=getattr(args, 'local_v6', None),
+                       interface=args.interface)
+    elif cmd == "remove-ix-peer": cli.remove_ix_peer(args.name)
+    # Bilateral Peer Management
+    elif cmd == "show-bilateral-peers": cli.show_bilateral_peers()
+    elif cmd == "add-bilateral-peer":
+        cli.add_bilateral_peer(args.name, args.asn, args.neighbor, args.local,
+                              description=args.description, localpref=args.localpref,
+                              neighbor_ip_v6=getattr(args, 'neighbor_v6', None),
+                              local_ip_v6=getattr(args, 'local_v6', None),
+                              max_prefixes=getattr(args, 'max_prefixes', 100))
+    elif cmd == "remove-bilateral-peer": cli.remove_bilateral_peer(args.name)
+    # Generic Peer Management
+    elif cmd == "create-peer": cli.create_peer_generic(args.ip, args.group)
+    elif cmd == "set-peer-asn": cli.set_peer_attribute(args.ip, "asn", int(args.asn))
+    elif cmd == "set-peer-description": cli.set_peer_attribute(args.ip, "description", args.description)
+    elif cmd == "set-peer-local-ip": cli.set_peer_attribute(args.ip, "local_ip", args.local_ip)
+    elif cmd == "add-peer-list-item": cli.add_peer_list_item(args.ip, args.attr, args.item)
+    elif cmd == "remove-peer-list-item": cli.remove_peer_list_item(args.ip, args.attr, args.item)
+    elif cmd == "set-peer-shutdown": cli.set_peer_attribute(args.ip, "disabled", not args.enable)
+    elif cmd == "set-peer-attribute": cli.set_peer_attribute(args.ip, args.attr, args.value)
+    
+    # VyOS-Style Policy Commands
+    elif cmd == "add-prefix-list-rule": cli.add_prefix_list_rule(args.name, args.rule, args.action, args.prefix, args.ipv6)
+    elif cmd == "set-prefix-list-action": cli.set_prefix_list_action(args.name, args.rule, args.action, args.ipv6)
+    elif cmd == "set-prefix-list-prefix": cli.set_prefix_list_prefix(args.name, args.rule, args.prefix, args.ipv6)
+    elif cmd == "set-community-list-action": cli.set_community_list_action(args.name, args.rule, args.action)
+    elif cmd == "set-community-list-regex": cli.set_community_list_regex(args.name, args.rule, args.regex)
+    elif cmd == "set-large-community-list-action": cli.set_large_community_list_action(args.name, args.rule, args.action)
+    elif cmd == "set-large-community-list-regex": cli.set_large_community_list_regex(args.name, args.rule, args.regex)
+    elif cmd == "set-as-path-list-action": cli.set_as_path_list_action(args.name, args.rule, args.action)
+    elif cmd == "set-as-path-list-as": cli.set_as_path_list_as(args.name, args.rule, args.asn)
+    elif cmd == "set-as-path-list-origin": cli.set_as_path_list_origin(args.name, args.rule, args.asn)
+    elif cmd == "add-route-map-rule": cli.add_route_map_rule(args.name, args.rule, args.action)
+    elif cmd == "set-route-map-match": cli.set_route_map_match(args.name, args.rule, args.match_type, args.value)
+    elif cmd == "set-route-map-set": cli.set_route_map_set(args.name, args.rule, args.attr, args.value)
+    elif cmd == "set-system-as": cli.set_system_as(args.asn)
+    elif cmd == "set-router-id": cli.set_router_id(args.router_id)
+    elif cmd == "set-neighbor-address-family": cli.set_neighbor_address_family(args.ip, args.af, args.direction, args.route_map)
+    elif cmd == "set-neighbor-redistribute": cli.set_neighbor_redistribute(args.ip, args.af, args.redistribute_type, not args.disable)
+    
+    # List commands for tab completion
+    elif cmd == "list-prefix-lists": cli.list_prefix_lists(ipv6=False)
+    elif cmd == "list-prefix-lists6": cli.list_prefix_lists(ipv6=True)
+    elif cmd == "list-route-maps": cli.list_route_maps()
+    elif cmd == "list-community-lists": cli.list_community_lists()
+    elif cmd == "list-large-community-lists": cli.list_large_community_lists()
+    elif cmd == "list-prefix-list-rules": cli.list_prefix_list_rules(args.name, args.ipv6)
+    
+    # Show commands
+    elif cmd == "show-prefix-list": cli.show_policy_object("prefix-list", args.name)
+    elif cmd == "show-prefix-list6": cli.show_policy_object("prefix-list6", args.name)
+    elif cmd == "show-community-list": cli.show_policy_object("community-list", args.name)
+    elif cmd == "show-large-community-list": cli.show_policy_object("large-community-list", args.name)
+    elif cmd == "show-route-map": cli.show_policy_object("route-map", args.name)
+    
+    # Delete commands
+    elif cmd == "delete-policy-object": cli.delete_policy_object(args.type, args.name)
+    elif cmd == "delete-policy-rule": cli.delete_policy_rule(args.type, args.name, args.rule)
+    
+    # Auto Prefix Generation
+    elif cmd == "update-prefixes": cli.update_prefixes(args.customer)
+
+
+if __name__ == "__main__":
+    main()

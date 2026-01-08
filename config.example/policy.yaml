@@ -1,0 +1,8 @@
+# Policy Objects Configuration
+# Objects are automatically created via CLI commands
+prefix_lists: {}
+prefix_lists_v6: {}
+community_lists: {}
+large_community_lists: {}
+as_path_lists: {}
+route_maps: {}

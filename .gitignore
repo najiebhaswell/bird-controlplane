@@ -1,0 +1,48 @@
+# Generated files
+output/
+output.backup-*/
+*.backup-*
+
+# Logs
+*.log
+klishd.log
+
+# Recordings
+*.cast
+*.gif
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Compiled klish (if rebuilt locally)
+klish-src/*.o
+klish-src/**/*.o
+faux-src/*.o
+faux-src/**/*.o
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System
+.DS_Store
+Thumbs.db
+
+# Test files (keep examples/ for documentation)
+test_*.sh
+verify_*.sh
+demo_*.sh
+
+# Local config (contains site-specific data)
+config/peers.yaml
+config/policy.yaml
+config/router.yaml
+config/blackhole.yaml
+
+# Dist binaries (can be rebuilt)
+dist/

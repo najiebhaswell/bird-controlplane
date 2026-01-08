@@ -1,0 +1,58 @@
+# Router configuration for BR2-YK
+# Migrated from bird.conf (lines 1-8)
+
+name: BR2-YK
+asn: 55666
+router_id: 10.251.251.222
+
+local_addresses:
+  ipv4: 10.251.251.222
+  ipv6: "2401:1700::e"
+
+bgp:
+  graceful_restart: true
+  hold_time: 60
+  keepalive: 20
+
+# === STATIC ROUTES (with next-hop only) ===
+# Blackhole routes are in blackhole.yaml
+static_routes:
+  ipv4:
+    - prefix: 103.247.120.0/29
+      via: 203.30.237.18
+    - prefix: 202.46.148.0/29
+      via: 203.30.237.18
+    - prefix: 202.145.6.0/26
+      via: 112.78.33.34
+    - prefix: 202.46.151.0/26
+      via: 112.78.33.34
+    - prefix: 58.145.175.0/25
+      via: 119.2.54.163
+    - prefix: 16.0.0.0/8
+      via: 10.11.12.2
+    - prefix: 48.0.0.0/8
+      via: 10.11.13.2
+
+  ipv6:
+    - prefix: 2401:1700:4:fb::/64
+      via: "2401:1700:3:bebe:c::5"
+    - prefix: 2401:1700:4::/48
+      via: "2401:1700:3:abcd::25"
+    - prefix: 2401:1700:16::/48
+      via: "2401:1700:3::4e"
+
+# === NO TRANSIT NAP ===
+no_transit_asns:
+  - 56258
+  - 58463
+  - 58552
+  - 136106
+  - 7597
+  - 7717
+  - 23671
+  - 7713
+  - 137295
+  - 4800
+  - 4761
+  - 140399
+  - 150528

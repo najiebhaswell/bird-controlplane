@@ -1,0 +1,599 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<KLISH
+	xmlns="https://klish.libcode.org/klish3"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="https://src.libcode.org/pkun/klish/src/master/klish.xsd">
+
+	<!-- VyOS-style policy configuration commands -->
+	<!-- These are added to the configure view (must enter configure terminal first) -->
+
+	<VIEW name="configure">
+		<!-- set policy prefix-list <name> rule <n> ... -->
+		<COMMAND name="set" help="Set configuration" mode="switch">
+			<COMMAND name="policy" help="Policy configuration" mode="switch">
+				<!-- prefix-list (IPv4) -->
+				<COMMAND name="prefix-list" help="IPv4 prefix list">
+					<PARAM name="name" help="Prefix list name" ptype="/PREFIX_LIST_NAME">
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="/PREFIX_LIST_RULE" mode="switch">
+								<COMMAND name="action" help="Rule action" mode="switch">
+									<COMMAND name="permit" help="Permit matching prefixes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-prefix-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "permit"
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="deny" help="Deny matching prefixes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-prefix-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "deny"
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="prefix" help="Prefix to match">
+									<PARAM name="prefix_val" help="Prefix (CIDR)" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-prefix-list-prefix "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "${KLISH_PARAM_prefix_val}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- prefix-list6 (IPv6) -->
+				<COMMAND name="prefix-list6" help="IPv6 prefix list">
+					<PARAM name="name" help="Prefix list name" ptype="/PREFIX_LIST6_NAME">
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="/PREFIX_LIST6_RULE" mode="switch">
+								<COMMAND name="action" help="Rule action" mode="switch">
+									<COMMAND name="permit" help="Permit matching prefixes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-prefix-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "permit" --ipv6
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="deny" help="Deny matching prefixes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-prefix-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "deny" --ipv6
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="prefix" help="Prefix to match">
+									<PARAM name="prefix_val" help="Prefix (CIDR)" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-prefix-list-prefix "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "${KLISH_PARAM_prefix_val}" --ipv6
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- route-map -->
+				<COMMAND name="route-map" help="Route map configuration">
+					<PARAM name="name" help="Route map name" ptype="/ROUTE_MAP_NAME">
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING" mode="switch">
+								<COMMAND name="action" help="Rule action" mode="switch">
+									<COMMAND name="permit" help="Permit matching routes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt add-route-map-rule "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "permit"
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="deny" help="Deny matching routes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt add-route-map-rule "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "deny"
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="match" help="Match condition" mode="switch">
+									<!-- Direct prefix-list shorthand (VyOS style) -->
+									<COMMAND name="prefix-list" help="Match prefix list (shorthand)">
+										<PARAM name="plist_name" help="Prefix list name" ptype="/PREFIX_LIST_NAME">
+											<ACTION sym="script">
+											/home/well/bird-controlplane/bin/bird-mgmt set-route-map-match "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" prefix_list "${KLISH_PARAM_plist_name}"
+											</ACTION>
+										</PARAM>
+									</COMMAND>
+									<COMMAND name="ip" help="IPv4 match" mode="switch">
+										<COMMAND name="address" help="Match address" mode="switch">
+											<COMMAND name="prefix-list" help="Match prefix list">
+												<PARAM name="plist_name" help="Prefix list name" ptype="/PREFIX_LIST_NAME">
+													<ACTION sym="script">
+													/home/well/bird-controlplane/bin/bird-mgmt set-route-map-match "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" prefix_list "${KLISH_PARAM_plist_name}"
+													</ACTION>
+												</PARAM>
+											</COMMAND>
+										</COMMAND>
+									</COMMAND>
+									<COMMAND name="ipv6" help="IPv6 match" mode="switch">
+										<COMMAND name="address" help="Match address" mode="switch">
+											<COMMAND name="prefix-list" help="Match prefix list">
+												<PARAM name="plist_name" help="Prefix list name" ptype="/PREFIX_LIST6_NAME">
+													<ACTION sym="script">
+													/home/well/bird-controlplane/bin/bird-mgmt set-route-map-match "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" prefix_list6 "${KLISH_PARAM_plist_name}"
+													</ACTION>
+												</PARAM>
+											</COMMAND>
+										</COMMAND>
+									</COMMAND>
+									<COMMAND name="community" help="Match BGP community">
+										<COMMAND name="list" help="Match community list">
+											<PARAM name="clist_name" help="Community list name" ptype="/COMMUNITY_LIST_NAME">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-route-map-match "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" community_list "${KLISH_PARAM_clist_name}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+									</COMMAND>
+									<COMMAND name="large-community" help="Match BGP large community">
+										<COMMAND name="list" help="Match large community list">
+											<PARAM name="lclist_name" help="Large community list name" ptype="/LARGE_COMMUNITY_LIST_NAME">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-route-map-match "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" large_community_list "${KLISH_PARAM_lclist_name}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+									</COMMAND>
+									<COMMAND name="as-path" help="Match BGP AS-path">
+										<COMMAND name="list" help="Match AS-path list">
+											<PARAM name="aspath_name" help="AS-path list name" ptype="/STRING">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-route-map-match "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" as_path_list "${KLISH_PARAM_aspath_name}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="set" help="Set attributes" mode="switch">
+									<COMMAND name="community" help="Set BGP community" mode="switch">
+										<COMMAND name="clear" help="Clear all communities">
+											<ACTION sym="script">
+											/home/well/bird-controlplane/bin/bird-mgmt set-route-map-set "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" community clear
+											</ACTION>
+										</COMMAND>
+										<PARAM name="value" help="Community (e.g. 123:456)" ptype="STRING">
+											<ACTION sym="script">
+											/home/well/bird-controlplane/bin/bird-mgmt set-route-map-set "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" community "${KLISH_PARAM_value}"
+											</ACTION>
+										</PARAM>
+									</COMMAND>
+									<COMMAND name="large-community" help="Set BGP large community" mode="switch">
+										<COMMAND name="clear" help="Clear all large communities">
+											<ACTION sym="script">
+											/home/well/bird-controlplane/bin/bird-mgmt set-route-map-set "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" large_community clear
+											</ACTION>
+										</COMMAND>
+										<PARAM name="value" help="Large community (e.g. 123:456:789)" ptype="STRING">
+											<ACTION sym="script">
+											/home/well/bird-controlplane/bin/bird-mgmt set-route-map-set "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" large_community "${KLISH_PARAM_value}"
+											</ACTION>
+										</PARAM>
+									</COMMAND>
+									<COMMAND name="local-preference" help="Set Local Preference">
+										<PARAM name="value" help="Local preference value" ptype="STRING">
+											<ACTION sym="script">
+											/home/well/bird-controlplane/bin/bird-mgmt set-route-map-set "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" local_pref "${KLISH_PARAM_value}"
+											</ACTION>
+										</PARAM>
+									</COMMAND>
+								</COMMAND>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- community-list -->
+				<COMMAND name="community-list" help="BGP community list">
+					<PARAM name="name" help="Community list name" ptype="/COMMUNITY_LIST_NAME">
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING" mode="switch">
+								<COMMAND name="action" help="Rule action" mode="switch">
+									<COMMAND name="permit" help="Permit matching communities">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-community-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "permit"
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="deny" help="Deny matching communities">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-community-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "deny"
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="regex" help="Community regex pattern">
+									<PARAM name="regex_val" help="Regex (e.g., 65000:100)" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-community-list-regex "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "${KLISH_PARAM_regex_val}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- large-community-list -->
+				<COMMAND name="large-community-list" help="BGP large community list">
+					<PARAM name="name" help="Large community list name" ptype="/LARGE_COMMUNITY_LIST_NAME">
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING" mode="switch">
+								<COMMAND name="action" help="Rule action" mode="switch">
+									<COMMAND name="permit" help="Permit matching large communities">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-large-community-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "permit"
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="deny" help="Deny matching large communities">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-large-community-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "deny"
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="regex" help="Large community regex pattern">
+									<PARAM name="regex_val" help="Regex (e.g., 65000:0:100)" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-large-community-list-regex "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "${KLISH_PARAM_regex_val}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- as-path-list -->
+				<COMMAND name="as-path-list" help="BGP AS-path list">
+					<PARAM name="name" help="AS-path list name" ptype="/STRING">
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="/STRING" mode="switch">
+								<COMMAND name="action" help="Rule action" mode="switch">
+									<COMMAND name="permit" help="Permit matching AS-path">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-as-path-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "permit"
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="deny" help="Deny matching AS-path">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-as-path-list-action "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "deny"
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="as" help="Match AS number in path">
+									<PARAM name="asn" help="AS number" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-as-path-list-as "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "${KLISH_PARAM_asn}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+								<COMMAND name="origin" help="Match origin AS (last in path)">
+									<PARAM name="asn" help="Origin AS number" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-as-path-list-origin "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}" "${KLISH_PARAM_asn}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+			</COMMAND>
+
+			<!-- set protocols bgp ... -->
+			<COMMAND name="protocols" help="Protocol configuration" mode="switch">
+				<COMMAND name="bgp" help="BGP configuration" mode="switch">
+					<COMMAND name="system-as" help="Set system AS number">
+						<PARAM name="asn" help="AS Number" ptype="STRING">
+							<ACTION sym="script">
+							/home/well/bird-controlplane/bin/bird-mgmt set-system-as "${KLISH_PARAM_asn}"
+							</ACTION>
+						</PARAM>
+					</COMMAND>
+					<COMMAND name="router-id" help="Set router ID">
+						<PARAM name="rid" help="Router ID (IPv4)" ptype="STRING">
+							<ACTION sym="script">
+							/home/well/bird-controlplane/bin/bird-mgmt set-router-id "${KLISH_PARAM_rid}"
+							</ACTION>
+						</PARAM>
+					</COMMAND>
+					<COMMAND name="neighbor" help="BGP neighbor">
+						<PARAM name="ip" help="Neighbor IP" ptype="STRING" mode="switch">
+							<COMMAND name="remote-as" help="Remote AS number">
+								<PARAM name="asn" help="AS Number" ptype="STRING">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt create-peer "${KLISH_PARAM_ip}" --group bilateral
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-asn "${KLISH_PARAM_ip}" "${KLISH_PARAM_asn}"
+									</ACTION>
+								</PARAM>
+							</COMMAND>
+							<COMMAND name="description" help="Neighbor description">
+								<PARAM name="desc" help="Description text" ptype="STRING">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-description "${KLISH_PARAM_ip}" "${KLISH_PARAM_desc}"
+									</ACTION>
+								</PARAM>
+							</COMMAND>
+							<COMMAND name="shutdown" help="Administratively disable peer">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt shutdown-peer "${KLISH_PARAM_ip}"
+								</ACTION>
+							</COMMAND>
+							<COMMAND name="route-reflector-client" help="Configure neighbor as Route Reflector client">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" route_reflector_client true
+								</ACTION>
+							</COMMAND>
+							<COMMAND name="next-hop-self" help="Disable the next hop calculation for this neighbor">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" next_hop_self true
+								</ACTION>
+							</COMMAND>
+							<COMMAND name="local-preference" help="Set default Local Preference">
+								<PARAM name="value" help="Local Preference value" ptype="STRING">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" localpref_import "${KLISH_PARAM_value}"
+									</ACTION>
+								</PARAM>
+							</COMMAND>
+							<COMMAND name="send-community" help="Send communities to this neighbor" mode="switch">
+								<COMMAND name="standard" help="Send standard communities">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" send_community standard
+									</ACTION>
+								</COMMAND>
+								<COMMAND name="large" help="Send large communities">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" send_community large
+									</ACTION>
+								</COMMAND>
+								<COMMAND name="both" help="Send both standard and large communities">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" send_community both
+									</ACTION>
+								</COMMAND>
+								<COMMAND name="none" help="Send no communities">
+									<ACTION sym="script">
+									/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" send_community none
+									</ACTION>
+								</COMMAND>
+							</COMMAND>
+							<COMMAND name="as-path-prepend" help="Prepend to AS path">
+								<PARAM name="asn" help="AS number" ptype="STRING">
+									<PARAM name="count" help="Prepend count" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-peer-attribute "${KLISH_PARAM_ip}" as_path_prepend "${KLISH_PARAM_asn} ${KLISH_PARAM_count}"
+										</ACTION>
+									</PARAM>
+								</PARAM>
+							</COMMAND>
+							<COMMAND name="prefix-list" help="Filter updates using prefix list" mode="switch">
+								<COMMAND name="import" help="Import prefix list">
+									<PARAM name="name" help="Prefix list name" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt add-peer-list-item "${KLISH_PARAM_ip}" import_allowed_prefix_lists "${KLISH_PARAM_name}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+								<COMMAND name="export" help="Export prefix list">
+									<PARAM name="name" help="Prefix list name" ptype="STRING">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt add-peer-list-item "${KLISH_PARAM_ip}" export_prefix_lists "${KLISH_PARAM_name}"
+										</ACTION>
+									</PARAM>
+								</COMMAND>
+							</COMMAND>
+							<COMMAND name="address-family" help="Address family" mode="switch">
+								<COMMAND name="ipv4-unicast" help="IPv4 unicast" mode="switch">
+									<COMMAND name="route-map" help="Apply route-map" mode="switch">
+										<COMMAND name="import" help="Import route-map">
+											<PARAM name="rmap" help="Route map name" ptype="/ROUTE_MAP_NAME">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-address-family "${KLISH_PARAM_ip}" ipv4-unicast import "${KLISH_PARAM_rmap}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+										<COMMAND name="export" help="Export route-map">
+											<PARAM name="rmap" help="Route map name" ptype="/ROUTE_MAP_NAME">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-address-family "${KLISH_PARAM_ip}" ipv4-unicast export "${KLISH_PARAM_rmap}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="ipv6-unicast" help="IPv6 unicast" mode="switch">
+									<COMMAND name="route-map" help="Apply route-map" mode="switch">
+										<COMMAND name="import" help="Import route-map">
+											<PARAM name="rmap" help="Route map name" ptype="/ROUTE_MAP_NAME">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-address-family "${KLISH_PARAM_ip}" ipv6-unicast import "${KLISH_PARAM_rmap}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+										<COMMAND name="export" help="Export route-map">
+											<PARAM name="rmap" help="Route map name" ptype="/ROUTE_MAP_NAME">
+												<ACTION sym="script">
+												/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-address-family "${KLISH_PARAM_ip}" ipv6-unicast export "${KLISH_PARAM_rmap}"
+												</ACTION>
+											</PARAM>
+										</COMMAND>
+									</COMMAND>
+									</COMMAND>
+								</COMMAND>
+								<COMMAND name="redistribute" help="Redistribute routes" mode="switch">
+									<COMMAND name="static" help="Redistribute static routes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-redistribute "${KLISH_PARAM_ip}" ipv4-unicast static
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="connected" help="Redistribute connected routes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-redistribute "${KLISH_PARAM_ip}" ipv4-unicast connected
+										</ACTION>
+									</COMMAND>
+								<COMMAND name="redistribute" help="Redistribute routes" mode="switch">
+									<COMMAND name="static" help="Redistribute static routes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-redistribute "${KLISH_PARAM_ip}" ipv6-unicast static
+										</ACTION>
+									</COMMAND>
+									<COMMAND name="connected" help="Redistribute connected routes">
+										<ACTION sym="script">
+										/home/well/bird-controlplane/bin/bird-mgmt set-neighbor-redistribute "${KLISH_PARAM_ip}" ipv6-unicast connected
+										</ACTION>
+									</COMMAND>
+								</COMMAND>
+							</COMMAND>
+						</PARAM>
+					</COMMAND>
+				</COMMAND>
+			<COMMAND name="static" help="Static route configuration" mode="switch">
+				<COMMAND name="route" help="Static route">
+					<PARAM name="prefix" help="Destination prefix (e.g. 10.0.0.0/8)" ptype="STRING" mode="switch">
+						<COMMAND name="via" help="Next hop">
+							<PARAM name="nexthop" help="Next hop IP address" ptype="STRING">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt add-static-route "${KLISH_PARAM_prefix}" "${KLISH_PARAM_nexthop}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+						<COMMAND name="blackhole" help="Blackhole route (discard)">
+							<ACTION sym="script">
+							/home/well/bird-controlplane/bin/bird-mgmt add-blackhole "${KLISH_PARAM_prefix}" "Manual"
+							</ACTION>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+			</COMMAND>
+			</COMMAND>
+		</COMMAND>
+
+		<!-- NO POLICY COMMANDS -->
+		<COMMAND name="no" help="Negate a command" mode="switch">
+			<COMMAND name="policy" help="Policy configuration" mode="switch">
+				
+				<!-- prefix-list -->
+				<COMMAND name="prefix-list" help="IPv4 prefix list">
+					<PARAM name="name" help="Prefix list name" ptype="/PREFIX_LIST_NAME">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt delete-policy-object prefix-list "${KLISH_PARAM_name}"
+						</ACTION>
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="/PREFIX_LIST_RULE">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt delete-policy-rule prefix-list "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- prefix-list6 -->
+				<COMMAND name="prefix-list6" help="IPv6 prefix list">
+					<PARAM name="name" help="Prefix list name" ptype="/PREFIX_LIST6_NAME">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt delete-policy-object prefix-list6 "${KLISH_PARAM_name}"
+						</ACTION>
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="/PREFIX_LIST6_RULE">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt delete-policy-rule prefix-list6 "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- community-list -->
+				<COMMAND name="community-list" help="BGP community list">
+					<PARAM name="name" help="Community list name" ptype="/COMMUNITY_LIST_NAME">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt delete-policy-object community-list "${KLISH_PARAM_name}"
+						</ACTION>
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt delete-policy-rule community-list "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+				<!-- large-community-list -->
+				<COMMAND name="large-community-list" help="BGP large community list">
+					<PARAM name="name" help="Large community list name" ptype="/LARGE_COMMUNITY_LIST_NAME">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt delete-policy-object large-community-list "${KLISH_PARAM_name}"
+						</ACTION>
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt delete-policy-rule large-community-list "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+				
+				<!-- as-path-list -->
+				<COMMAND name="as-path-list" help="BGP AS-path list">
+					<PARAM name="name" help="AS-path list name" ptype="STRING">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt delete-policy-object as-path-list "${KLISH_PARAM_name}"
+						</ACTION>
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt delete-policy-rule as-path-list "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+				
+				<!-- route-map -->
+				<COMMAND name="route-map" help="Route map configuration">
+					<PARAM name="name" help="Route map name" ptype="/ROUTE_MAP_NAME">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt delete-policy-object route-map "${KLISH_PARAM_name}"
+						</ACTION>
+						<COMMAND name="rule" help="Rule configuration">
+							<PARAM name="rule_num" help="Rule number" ptype="STRING">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt delete-policy-rule route-map "${KLISH_PARAM_name}" "${KLISH_PARAM_rule_num}"
+								</ACTION>
+							</PARAM>
+						</COMMAND>
+					</PARAM>
+				</COMMAND>
+
+			</COMMAND>
+			<COMMAND name="protocols" help="Delete protocol configuration" mode="switch">
+				<COMMAND name="bgp" help="BGP protocol" mode="switch">
+					<COMMAND name="neighbor" help="Delete BGP neighbor" mode="switch">
+						<PARAM name="ip" help="Neighbor IP" ptype="STRING">
+							<ACTION sym="script">
+							/home/well/bird-controlplane/bin/bird-mgmt delete-peer "${KLISH_PARAM_ip}"
+							</ACTION>
+							<COMMAND name="shutdown" help="Enable peer (no shutdown)">
+								<ACTION sym="script">
+								/home/well/bird-controlplane/bin/bird-mgmt no-shutdown-peer "${KLISH_PARAM_ip}"
+								</ACTION>
+							</COMMAND>
+						</PARAM>
+					</COMMAND>
+				</COMMAND>
+				<COMMAND name="static" help="Static route configuration" mode="switch">
+					<COMMAND name="route" help="Remove static route">
+						<PARAM name="prefix" help="Destination prefix to remove" ptype="STRING">
+							<ACTION sym="script">
+							/home/well/bird-controlplane/bin/bird-mgmt remove-static-route "${KLISH_PARAM_prefix}"
+							</ACTION>
+						</PARAM>
+					</COMMAND>
+				</COMMAND>
+			</COMMAND>
+		</COMMAND>
+	</VIEW>
+
+</KLISH>

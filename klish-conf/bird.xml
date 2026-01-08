@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<KLISH
+	xmlns="https://klish.libcode.org/klish3"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="https://src.libcode.org/pkun/klish/src/master/klish.xsd">
+
+	<VIEW name="main">
+		<PROMPT name="prompt">
+			<ACTION sym="prompt">%u@%h&gt; </ACTION>
+		</PROMPT>
+
+        <HOTKEY key="^Z" cmd="exit"/>
+        <HOTKEY key="^C" cmd="quit"/>
+
+        <COMMAND name="exit" help="Exit">
+            <ACTION sym="nav">pop</ACTION>
+        </COMMAND>
+
+        <COMMAND name="quit" help="Quit the CLI">
+            <ACTION sym="nav">exit</ACTION>
+        </COMMAND>
+
+		<!-- SHOW COMMANDS -->
+		<COMMAND name="show" help="Show running system information" mode="switch">
+			<COMMAND name="bgp" help="Show BGP information" mode="switch">
+				<COMMAND name="summary" help="Show BGP summary">
+					<PARAM name="type" help="Filter by peer type" ptype="/STRING" min="0">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt show-peers "${KLISH_PARAM_type}"
+						</ACTION>
+					</PARAM>
+					<ACTION sym="script">
+					/home/well/bird-controlplane/bin/bird-mgmt show-peers
+					</ACTION>
+				</COMMAND>
+				<COMMAND name="neighbor" help="Show BGP neighbor details">
+					<PARAM name="ip" help="Neighbor IP address" ptype="STRING">
+						<ACTION sym="script">
+						/home/well/bird-controlplane/bin/bird-mgmt show-peer-detail "${KLISH_PARAM_ip}"
+						</ACTION>
+					</PARAM>
+				</COMMAND>
+			</COMMAND>
+
+			<COMMAND name="static-routes" help="Show static routes">
+				<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt show-static-routes
+				</ACTION>
+			</COMMAND>
+			
+
+
+			<COMMAND name="prefix-list" help="Show prefix-list details">
+				<PARAM name="name" help="Prefix-list name" ptype="/PREFIX_LIST_NAME">
+					<ACTION sym="script">
+					/home/well/bird-controlplane/bin/bird-mgmt show-prefix-list "${KLISH_PARAM_name}"
+					</ACTION>
+				</PARAM>
+			</COMMAND>
+
+			<COMMAND name="prefix-list6" help="Show IPv6 prefix-list details">
+				<PARAM name="name" help="Prefix-list name" ptype="/PREFIX_LIST6_NAME">
+					<ACTION sym="script">
+					/home/well/bird-controlplane/bin/bird-mgmt show-prefix-list6 "${KLISH_PARAM_name}"
+					</ACTION>
+				</PARAM>
+			</COMMAND>
+
+			<COMMAND name="route-map" help="Show route-map details">
+				<PARAM name="name" help="Route-map name" ptype="/ROUTE_MAP_NAME">
+					<ACTION sym="script">
+					/home/well/bird-controlplane/bin/bird-mgmt show-route-map "${KLISH_PARAM_name}"
+					</ACTION>
+				</PARAM>
+			</COMMAND>
+
+			<COMMAND name="community-list" help="Show community-list details">
+				<PARAM name="name" help="Community-list name" ptype="/COMMUNITY_LIST_NAME">
+					<ACTION sym="script">
+					/home/well/bird-controlplane/bin/bird-mgmt show-community-list "${KLISH_PARAM_name}"
+					</ACTION>
+				</PARAM>
+			</COMMAND>
+
+			<COMMAND name="large-community-list" help="Show large-community-list details">
+				<PARAM name="name" help="Large-community-list name" ptype="/LARGE_COMMUNITY_LIST_NAME">
+					<ACTION sym="script">
+					/home/well/bird-controlplane/bin/bird-mgmt show-large-community-list "${KLISH_PARAM_name}"
+					</ACTION>
+				</PARAM>
+			</COMMAND>
+		</COMMAND>
+
+		<!-- CONFIGURE -->
+		<COMMAND name="configure" help="Enter configuration mode">
+			<COMMAND name="terminal" help="Configure from the terminal">
+				<ACTION sym="nav">push configure</ACTION>
+			</COMMAND>
+		</COMMAND>
+
+	</VIEW>
+
+</KLISH>

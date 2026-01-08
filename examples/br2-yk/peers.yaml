@@ -1,0 +1,634 @@
+peers:
+  upstream:
+    lintas_iptx:
+      description: LINTAS-IPTX-YK
+      asn: 4800
+      neighbor_ip: 103.8.67.69
+      neighbor_ip_v6: fd00:2000::1
+      local_ip_v6: fd00:2000::2
+      type: upstream
+      provider: lintas
+      graceful_restart: true
+      accept_default_route: false
+      accept_full_table: true
+      localpref_import: 100
+      communities:
+        info: 3
+        provider: lintas
+      export_prefix_lists:
+      - gmedia_yk
+      - gmedia_srk
+      - gmedia_vdc
+      - fiberstream
+      - msa_dimensi
+      - priority_enterprise
+      - pemprov_diy
+      - pemkot_diy
+      - jcamp
+      - wahana
+      - bimatek
+      - diskominfo_sleman
+      - uty
+      - argon
+      - kledo
+      - uii
+      import_discard_asns:
+      - 7717
+      - 4761
+      - 7597
+      - 135472
+      - 135449
+      - 15169
+      import_localpref_by_prefix:
+      - prefix: 8.8.8.0/24
+        localpref: 3000
+      - prefix: 1.1.1.0/24
+        localpref: 3000
+      import_localpref_by_asn:
+      - asn: 18051
+        localpref: 2500
+      - asn: 10030
+        localpref: 2500
+      - asn: 63859
+        localpref: 2500
+      - asn: 54113
+        localpref: 2500
+      - asn: 15169
+        localpref: 2500
+      export_discard_asns:
+      - 38760
+      priority_prefixes_export:
+      - prefix: 103.99.164.0/22
+        localpref: 600
+      import_localpref_by_asn_v6:
+      - asn: 15169
+        localpref: 2500
+      - asn: 16509
+        localpref: 3500
+      - asn: 174
+        localpref: 300
+      import_discard_asns_v6:
+      - 15169
+    telkom_iptx:
+      description: TELKOM-IPTX-YK
+      asn: 7713
+      neighbor_ip: 36.92.250.65
+      neighbor_ip_v6: 2001:4488:400:218::1
+      local_ip_v6: 2001:4488:400:218::2
+      type: upstream
+      provider: telkom
+      graceful_restart: true
+      allow_local_as: 1
+      accept_default_route: false
+      accept_full_table: true
+      localpref_import: 90
+      communities:
+        info: 3
+        provider: telkom
+      export_prefix_lists:
+      - gmedia_yk
+      - gmedia_vdc
+      - pemprov_diy
+      - jcamp
+      - css_yk
+      - kledo
+      - uin_pwt
+      - amikom_pwt
+      - dagadu
+      - usd_yk
+      import_discard_asns:
+      - 7717
+      - 4761
+      - 4800
+      - 7597
+      - 135472
+      - 135449
+      - 135463
+      import_localpref_by_asn:
+      - asn: 17974
+        localpref: 2500
+      - asn: 23693
+        localpref: 2500
+      - asn: 7713
+        localpref: 2000
+      - asn: 137019
+        localpref: 2500
+      - asn: 30103
+        localpref: 3001
+      - asn: 8075
+        localpref: 3001
+      export_localpref_by_asn:
+      - asn: 38760
+        localpref: 300
+    telkom_iptx2:
+      description: TELKOM-IPTX-YK-2
+      asn: 7713
+      neighbor_ip: 118.97.218.113
+      neighbor_ip_v6: fd00:2001::1
+      local_ip_v6: fd00:2001::2
+      type: upstream
+      provider: telkom2
+      graceful_restart: true
+      localpref_import: 90
+      accept_default_route: false
+      accept_full_table: true
+      communities:
+        info: 3
+        provider: telkom2
+      export_prefix_lists:
+      - gmedia_yk
+      - gmedia_srk
+      - pemprov_diy
+      - diskominfo_sleman
+      - kledo
+      - uin_pwt
+      - amikom_pwt
+  intercity:
+    jkt_linknet:
+      description: ICT-JKT-LINKNET
+      asn: 55666
+      neighbor_ip: 49.128.183.106
+      neighbor_ip_v6: 2401:1700::d
+      local_ip_v6: 2401:1700::e
+      type: ibgp
+      role: intercity
+      region: jakarta
+      provider: linknet
+      hold_time: 15
+      next_hop_self: true
+      route_reflector_client: true
+      localpref_import: 90
+      localpref_export: 110
+      import_accept_communities:
+      - (55666, 8888)
+      - (55666, 8889)
+      - (55666, 25110)
+      - (55666, 11132)
+      import_discard_prefix_lists:
+      - gmedia_yk
+      - gmedia_srk
+      - gmedia_pwt
+      - pemprov_diy
+      - pemkot_diy
+      - jcamp
+      - wahana
+      - msa
+      - msa_dimensi
+      - uty
+      - sttkd_yk
+      - css_yk
+      - diskominfo_sleman
+      - bip_yk
+      - aam_yk
+      - foxline_yk
+      - kledo
+      - uii
+      - almaatayk
+      - dagadu
+      - unisa
+      - umby_yk
+      - usd_yk
+      - uin_pwt
+      - amikom_pwt
+      export_prefix_lists:
+      - gmedia_yk
+      - gmedia_srk
+      - gmedia_pwt
+      - gmedia_pml
+      - pemprov_diy
+      - pemkot_diy
+      - jcamp
+      - wahana
+      - msa
+      - msa_dimensi
+      - bimatek
+      - diskominfo_sleman
+      - diskominfo_sukoharjo
+      - bip_yk
+      - aam_yk
+      - foxline_yk
+      - argon
+      - netlink
+      - uty
+      - sttkd_yk
+      - css_yk
+      - unisa
+      - kledo
+      - uii
+      - almaatayk
+      - umby_yk
+      - usd_yk
+      - uin_pwt
+      - amikom_pwt
+      - dagadu
+      export_accept_communities:
+      - (55666, 8888)
+      community_tagging_rules:
+      - prefix_list: prepend_fiberstarnap
+        add_community: (55666, 25514)
+      - prefix_list: discard_fiberstarnap
+        add_community: (55666, 25510)
+      - prefix_list: prepend_sdinap
+        add_community: (55666, 25524)
+      - prefix_list: discard_sdinap
+        add_community: (55666, 25520)
+      - prefix_list: prepend_pgasnap
+        add_community: (55666, 25534)
+      - prefix_list: discard_pgasnap
+        add_community: (55666, 25530)
+    jkt_tis:
+      description: ICT-JKT-TIS
+      asn: 55666
+      neighbor_ip: 49.128.183.86
+      neighbor_ip_v6: fd00:2002::1
+      local_ip_v6: fd00:2002::2
+      type: ibgp
+      role: intercity
+      region: jakarta
+      provider: tis
+      hold_time: 15
+      next_hop_self: true
+      route_reflector_client: true
+      localpref_import: 80
+      localpref_export: 110
+      import_accept_communities:
+      - (55666, 8888)
+      - (55666, 8889)
+      - (55666, 25110)
+      - (55666, 11132)
+      export_accept_communities:
+      - (55666, 8888)
+      community_tagging_rules:
+      - prefix_list: prepend_fiberstarnap
+        add_community: (55666, 25514)
+      - prefix_list: discard_fiberstarnap
+        add_community: (55666, 25510)
+      - prefix_list: prepend_sdinap
+        add_community: (55666, 25524)
+      - prefix_list: discard_sdinap
+        add_community: (55666, 25520)
+      - prefix_list: prepend_pgasnap
+        add_community: (55666, 25534)
+      - prefix_list: discard_pgasnap
+        add_community: (55666, 25530)
+    jkt_iforte:
+      description: ICT-JKT-IFORTE
+      asn: 55666
+      neighbor_ip: 49.128.183.184
+      neighbor_ip_v6: 2401:1700::41
+      local_ip_v6: 2401:1700::42
+      type: ibgp
+      role: intercity
+      region: jakarta
+      provider: iforte
+      hold_time: 15
+      next_hop_self: true
+      route_reflector_client: true
+      localpref_import: 100
+      localpref_export: 110
+      import_accept_communities:
+      - (55666, 25110)
+      export_accept_communities:
+      - (55666, 8888)
+      community_tagging_rules:
+      - prefix_list: prepend_fiberstarnap
+        add_standard_community: (55666, 25514)
+      - prefix_list: discard_fiberstarnap
+        add_standard_community: (55666, 25510)
+      - prefix_list: prepend_sdinap
+        add_standard_community: (55666, 25524)
+      - prefix_list: discard_sdinap
+        add_standard_community: (55666, 25520)
+      - prefix_list: prepend_pgasnap
+        add_standard_community: (55666, 25534)
+      - prefix_list: discard_pgasnap
+        add_standard_community: (55666, 25530)
+  backbone:
+    br1ncdc:
+      description: PTP.BR1-NCDC
+      asn: 55666
+      neighbor_ip: 112.78.35.221
+      local_ip: 112.78.35.222
+      neighbor_ip_v6: 2401:1700:3::2d
+      local_ip_v6: 2401:1700:3::2e
+      type: ibgp
+      role: backbone
+      next_hop_self: true
+      route_reflector_client: true
+      import_allowed_prefix_lists:
+      - ggc_yk
+      - gmedia_yk
+      - gmedia_vdc
+      - fiberstream_idc32g
+      - gmedia_pwt
+      - pemprov_diy
+      - pemkot_diy
+      - wahana
+      - bimatek
+      - uty
+      - css_yk
+      - diskominfo_sleman
+      - dagadu
+      export_prefix_lists:
+      - gmedia_yk
+      - gmedia_jatim
+      - fiberstream_idc32g
+      - tin_palagan
+      - pemprov_diy
+      - pemkot_diy
+      - wahana
+      - bimatek
+      - gmedia_pwt
+      - gmedia_pml
+      - argon
+      - netlink
+      - uty
+      - diskominfo_sleman
+      - diskominfo_sukoharjo
+      - sttkd_yk
+      - unisa
+      - kledo
+      - uii
+      - almaatayk
+      - bip_yk
+      - aam_yk
+      - foxline_yk
+      - umby_yk
+      - uin_pwt
+      - amikom_pwt
+    br2idc32g:
+      description: PTP.BR2.IDC32GA
+      asn: 55666
+      neighbor_ip: 112.78.33.9
+      neighbor_ip_v6: 2401:1700:3::5
+      local_ip_v6: 2401:1700:3::6
+      type: ibgp
+      role: backbone
+      next_hop_self: true
+      route_reflector_client: true
+      is_dr: false
+      import_accept_standard_communities:
+      - (55666, 11132)
+      - (55666, 8888)
+      - (55666, 8889)
+      - (55666, 4761)
+      - (55666, 1111)
+    br3ncdc:
+      description: PTP.BR3-NCDC-NEW
+      asn: 55666
+      neighbor_ip: 119.2.54.123
+      local_ip: 119.2.54.122
+      neighbor_ip_v6: 2401:1700:3::46
+      local_ip_v6: 2401:1700:3::45
+      type: ibgp
+      role: backbone
+      next_hop_self: true
+      route_reflector_client: true
+    dr7ncdc:
+      description: PTP.DR7NCDC
+      asn: 55666
+      neighbor_ip: 119.2.54.136
+      neighbor_ip_v6: 2401:1700:3::42
+      local_ip_v6: 2401:1700:3::41
+      type: ibgp
+      role: backbone
+      is_dr: true
+      next_hop_self: true
+      route_reflector_client: true
+      import_community: '55666:7'
+    br2_srk_fiberstar:
+      description: ICT-SRK-FIBERSTAR
+      asn: 55666
+      neighbor_ip: 49.128.177.238
+      neighbor_ip_v6: fd00:2003::1
+      local_ip_v6: fd00:2003::2
+      local_ip: 49.128.177.237
+      type: ibgp
+      role: regional
+      region: surakarta
+      graceful_restart: true
+      next_hop_self: true
+      max_prefixes: 10
+      import_allowed_prefix_lists:
+      - diskominfo_sukoharjo
+      - gmedia_srk
+      export_prefix_lists:
+      - gmedia_yk
+      - msa
+      - msa_dimensi
+  downstream:
+    jcamp:
+      description: JOGJA CAMP
+      asn: 46050
+      neighbor_ip: 112.78.33.118
+      neighbor_ip_v6: fd00:2004::1
+      local_ip_v6: fd00:2004::2
+      type: downstream
+      max_prefixes: 50
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - jcamp
+      localpref_base: 100
+    jcamp_riv5:
+      description: JOGJA CAMP RIV_5
+      asn: 46050
+      neighbor_ip: 112.78.33.126
+      neighbor_ip_v6: fd00:2005::1
+      local_ip_v6: fd00:2005::2
+      type: downstream
+      max_prefixes: 50
+      localpref_import: 600
+      graceful_restart: true
+      allowed_prefixes:
+      - 103.30.146.0/23
+    kledo:
+      description: KLEDO IX
+      asn: 154337
+      neighbor_ip: 119.2.54.7
+      neighbor_ip_v6: 2401:1700:3:1543:37::6
+      type: downstream
+      max_prefixes: 50
+      localpref_import: 600
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - kledo
+    bimatek:
+      description: PT BINTANG MATARAM TEKNOLOGI
+      asn: 136885
+      neighbor_ip: 103.105.252.233
+      neighbor_ip_v6: 2401:1700:3:abcd::8e
+      local_ip_v6: 2401:1700:3:abcd::8d
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 550
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - bimatek
+    uty:
+      description: UTY-BACKUP
+      asn: 136112
+      neighbor_ip: 49.128.176.242
+      neighbor_ip_v6: fd00:2006::1
+      local_ip_v6: fd00:2006::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 600
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - uty
+    umby:
+      description: UMBY
+      asn: 133832
+      neighbor_ip: 49.128.176.14
+      neighbor_ip_v6: fd00:2007::1
+      local_ip_v6: fd00:2007::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 900
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - umby_yk
+    pemprov_desa:
+      description: PEMPROV INET DESA
+      asn: 59151
+      neighbor_ip: 203.30.237.122
+      neighbor_ip_v6: fd00:2008::1
+      local_ip_v6: fd00:2008::2
+      type: downstream
+      max_prefixes: 50
+      localpref_import: 400
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - pemprov_diy
+    pemprov_diy:
+      description: PEMPROV DIY
+      asn: 59151
+      neighbor_ip: 203.30.237.130
+      neighbor_ip_v6: fd00:2009::1
+      local_ip_v6: fd00:2009::2
+      type: downstream
+      max_prefixes: 50
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - pemprov_diy
+    pemkot_main:
+      description: BR.PEMKOT-MAIN via NCDC
+      asn: 38526
+      neighbor_ip: 111.68.24.46
+      neighbor_ip_v6: fd00:2010::1
+      local_ip_v6: fd00:2010::2
+      type: downstream
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - pemkot_diy
+    argon:
+      description: CV ARGON DATA INTERKONEKSI
+      asn: 55683
+      neighbor_ip: 49.128.176.226
+      neighbor_ip_v6: fd00:2011::1
+      local_ip_v6: fd00:2011::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - argon
+    netlink:
+      description: PT NETLINK LINTAS DATA
+      asn: 142392
+      neighbor_ip: 49.128.177.50
+      neighbor_ip_v6: fd00:2012::1
+      local_ip_v6: fd00:2012::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - netlink
+    diskominfo_sleman:
+      description: DISKOMINFO-SLEMAN
+      asn: 135472
+      neighbor_ip: 49.128.177.226
+      neighbor_ip_v6: fd00:2013::1
+      local_ip_v6: fd00:2013::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - diskominfo_sleman
+    sttkd_yk:
+      description: STTKD-YK
+      asn: 140463
+      neighbor_ip: 112.78.33.157
+      neighbor_ip_v6: fd00:2014::1
+      local_ip_v6: fd00:2014::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - sttkd_yk
+    bip_yk:
+      description: BIPNET-YK
+      asn: 135449
+      neighbor_ip: 111.68.30.10
+      neighbor_ip_v6: fd00:2015::1
+      local_ip_v6: fd00:2015::2
+      type: downstream
+      localpref_import: 600
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - bip_yk
+      - foxline_yk
+      - aam_yk
+      import_allowed_asns:
+      - 150251
+      - 136078
+    almaatayk:
+      description: UNIVERSITAS ALMA ATA
+      asn: 149927
+      neighbor_ip: 49.128.177.183
+      neighbor_ip_v6: fd00:2016::1
+      local_ip_v6: fd00:2016::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - almaatayk
+    uii:
+      description: UII
+      asn: 133827
+      neighbor_ip: 49.128.177.70
+      neighbor_ip_v6: fd00:2017::1
+      local_ip_v6: fd00:2017::2
+      type: downstream
+      max_prefixes: 10
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - uii
+    msa:
+      description: MSA (AS38760)
+      asn: 38760
+      neighbor_ip: 112.78.36.6
+      neighbor_ip_v6: fd00:3876::1
+      local_ip_v6: fd00:3876::2
+      type: downstream
+      max_prefixes: 50
+      localpref_import: 500
+      graceful_restart: true
+      import_allowed_prefix_lists:
+      - msa
+      priority_prefixes_import:
+      - prefix: 103.99.164.0/22
+        localpref: 200
+      localpref_base: 90
+      import_discard_prefixes: []
+      export_discard_prefixes: []
+      import_discard_prefixes_v6: []
+      export_discard_prefixes_v6: []

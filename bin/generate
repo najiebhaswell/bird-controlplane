@@ -1,0 +1,989 @@
+#!/usr/bin/env python3
+"""
+BIRD Configuration Generator - Modular Output
+Generates BIRD configuration as separate modular files
+"""
+
+import yaml
+import sys
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound
+
+
+class BirdConfigGenerator:
+    def __init__(self, framework_dir):
+        self.framework_dir = Path(framework_dir)
+        self.config_dir = self.framework_dir / "config"
+        self.template_dir = self.framework_dir / "templates"
+        self.output_dir = self.framework_dir / "output"
+        
+        # Setup Jinja2
+        self.jinja_env = Environment(loader=FileSystemLoader(str(self.template_dir)))
+        # Add custom filter for BIRD identifier sanitization
+        self.jinja_env.filters['sanitize'] = self._sanitize_identifier
+        
+        # Load all YAML data
+        self.router = self._load_yaml("router.yaml")
+        self.peers = self._load_yaml("peers.yaml")
+        self.prefixes = self._load_yaml("prefixes.yaml")
+        self.bogon = self._load_yaml("bogon_filter.yaml")
+        self.policy = self._load_yaml_optional("policy.yaml")  # VyOS-style policies
+        self.bgp = self.router.get("bgp", {})
+        
+    def _load_yaml(self, filename):
+        """Load YAML file from config directory"""
+        filepath = self.config_dir / filename
+        if not filepath.exists():
+            print(f"Error: {filepath} not found!")
+            sys.exit(1)
+        
+        with open(filepath, 'r') as f:
+            return yaml.safe_load(f)
+    
+    def _load_yaml_optional(self, filename):
+        """Load YAML file if exists, otherwise return empty dict"""
+        filepath = self.config_dir / filename
+        if not filepath.exists():
+            return {}
+        with open(filepath, 'r') as f:
+            return yaml.safe_load(f) or {}
+    
+    def _render_template(self, template_name, context):
+        """Render Jinja2 template with context"""
+        try:
+            template = self.jinja_env.get_template(template_name)
+            return template.render(context)
+        except TemplateNotFound:
+            print(f"Error: Template {template_name} not found!")
+            return None
+    
+    def _sanitize_identifier(self, name):
+        """Sanitize name for use as BIRD identifier (no dots, colons, etc.)"""
+        return str(name).replace('.', '_').replace(':', '_').replace('-', '_')
+    
+    def _write_file(self, relative_path, content):
+        """Write content to file in output directory"""
+        output_file = self.output_dir / relative_path
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_file, 'w') as f:
+            f.write(content)
+        return output_file
+    
+    def _get_all_peers(self):
+        """Flatten all peers organized by type"""
+        all_peers = {}
+        peers_by_type = {}
+        
+        for peer_type in self.peers["peers"]:
+            peers_by_type[peer_type] = {}
+            for peer_name, peer_config in self.peers["peers"][peer_type].items():
+                all_peers[peer_name] = peer_config
+                peers_by_type[peer_type][peer_name] = peer_config
+        
+        return all_peers, peers_by_type
+    
+    def _get_prefix_data(self):
+        """Get prefix data from config"""
+        prefix_groups = self.prefixes.get("prefix_groups", {})
+        router_prefixes = self.prefixes.get("router_prefixes", {})
+        
+        own_prefixes_v4 = []
+        own_prefixes_v6 = []
+        remote_own_prefixes_v4 = []
+        
+        # Build own_prefixes from groups to originate
+        for group_name in router_prefixes.get("originate", []):
+            if group_name in prefix_groups:
+                own_prefixes_v4.extend(prefix_groups[group_name].get("ipv4", []))
+                own_prefixes_v6.extend(prefix_groups[group_name].get("ipv6", []))
+        
+        # Build remote_own_prefixes from accept_ibgp groups
+        for group_name in router_prefixes.get("accept_ibgp", []):
+            if group_name in prefix_groups:
+                remote_own_prefixes_v4.extend(prefix_groups[group_name].get("ipv4", []))
+        
+        return {
+            "prefix_groups": prefix_groups,
+            "router_prefixes": router_prefixes,
+            "own_prefixes_v4": own_prefixes_v4,
+            "own_prefixes_v6": own_prefixes_v6,
+            "remote_own_prefixes_v4": remote_own_prefixes_v4
+        }
+    
+    def generate_main_config(self):
+        """Generate main bird.conf with includes"""
+        # Calculate router_id
+        router_id = self.router.get("router_id")
+        if not router_id:
+            loopback = self.router.get("interfaces", {}).get("loopback")
+            if isinstance(loopback, dict):
+                router_id = loopback.get("ipv4", "0.0.0.0").split("/")[0]
+            else:
+                router_id = str(loopback).split("/")[0] if loopback else "0.0.0.0"
+        
+        config = f"""# ============================================================================
+# BIRD Configuration - {self.router.get('name', 'Unknown')} (AS{self.router.get('asn', 'Unknown')})
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+log "/var/log/bird.log" all;
+log syslog {{ error, fatal }};
+router id {router_id};
+
+# Explicitly define own AS for global usage
+define OWN_AS = {self.router.get('asn', 65000)};
+
+# Global BGP settings
+protocol device {{
+    scan time 10;
+}}
+
+protocol direct {{
+    ipv4;
+    ipv6;
+}}
+
+protocol kernel {{
+    ipv4 {{
+        export all;
+        import none;
+    }};
+}}
+
+protocol kernel {{
+    ipv6 {{
+        export all;
+        import none;
+    }};
+}}
+
+# ============================================================================
+# INCLUDES
+# ============================================================================
+
+# 1. System Functions
+include "functions.conf";
+
+# 2. Static Routes and Blackholes
+include "static-routes.conf";
+
+# 3. Policy Objects and Route Maps (Prefix Lists, Community Lists, AS Paths)
+include "route-maps.conf";
+
+# 4. BGP Protocols and Filters
+include "bgp.conf";
+"""
+        return config
+    
+    def generate_functions(self):
+        """Generate functions.conf"""
+        return f"""# ============================================================================
+# Custom Functions - {self.router.get('name', 'Unknown')}
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+# Check if prefix is a martian (bogon)
+function is_martian_v4() {{
+    return net ~ [
+        0.0.0.0/8+, 10.0.0.0/8+, 127.0.0.0/8+, 169.254.0.0/16+,
+        172.16.0.0/12+, 192.0.2.0/24+, 192.168.0.0/16+, 198.18.0.0/15+,
+        198.51.100.0/24+, 203.0.113.0/24+, 224.0.0.0/4+, 240.0.0.0/4+
+    ];
+}}
+
+function is_martian_v6() {{
+    return net ~ [
+        ::/8+, 100::/64+, 2001:db8::/32+, fc00::/7+, fe80::/10+, ff00::/8+
+    ];
+}}
+
+# Check if AS path contains bogon ASN
+function contains_bogon_asn() {{
+    return bgp_path ~ [0, 23456, 64496..64511, 65535, 4200000000..4294967295];
+}}
+"""
+    
+    def generate_prefixes(self):
+        """Generate prefix configuration files"""
+        prefix_data = self._get_prefix_data()
+        files = {}
+        
+        # bogons.conf
+        files["bogons.conf"] = f"""# ============================================================================
+# Bogon Prefixes
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+define BOGON_PREFIXES_V4 = [
+    0.0.0.0/8+, 10.0.0.0/8+, 127.0.0.0/8+, 169.254.0.0/16+,
+    172.16.0.0/12+, 192.0.2.0/24+, 192.168.0.0/16+, 198.18.0.0/15+,
+    198.51.100.0/24+, 203.0.113.0/24+, 224.0.0.0/4+, 240.0.0.0/4+
+];
+
+define BOGON_PREFIXES_V6 = [
+    ::/8+, 100::/64+, 2001:db8::/32+, fc00::/7+, fe80::/10+, ff00::/8+
+];
+
+define BOGON_ASNS = [0, 23456, 64496..64511, 65535, 4200000000..4294967295];
+"""
+        
+        # own-prefixes.conf
+        own_v4 = prefix_data["own_prefixes_v4"]
+        own_v6 = prefix_data["own_prefixes_v6"]
+        
+        own_v4_str = ",\n    ".join(own_v4) if own_v4 else "# empty"
+        own_v6_str = ",\n    ".join(own_v6) if own_v6 else "# empty"
+        
+        files["own-prefixes.conf"] = f"""# ============================================================================
+# Own Network Prefixes
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+define OWN_PREFIXES_V4 = [
+    {own_v4_str}
+];
+
+define OWN_PREFIXES_V6 = [
+    {own_v6_str}
+];
+"""
+        
+        # remote-prefixes.conf (from iBGP)
+        remote_v4 = prefix_data["remote_own_prefixes_v4"]
+        remote_v4_str = ",\n    ".join(remote_v4) if remote_v4 else "# empty"
+        
+        files["remote-prefixes.conf"] = f"""# ============================================================================
+# Remote Network Prefixes (from iBGP)
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+define REMOTE_PREFIXES_V4 = [
+    {remote_v4_str}
+];
+"""
+        
+        # Generate per-group prefix lists
+        prefix_groups = prefix_data["prefix_groups"]
+        group_content = f"""# ============================================================================
+# Prefix Groups (per-customer/service)
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+        for group_name, group_data in prefix_groups.items():
+            v4_prefixes = group_data.get("ipv4", [])
+            v6_prefixes = group_data.get("ipv6", [])
+            
+            if v4_prefixes:
+                v4_str = ",\n    ".join(v4_prefixes)
+                group_content += f"""define {group_name.upper()}_V4 = [
+    {v4_str}
+];
+
+"""
+            if v6_prefixes:
+                v6_str = ",\n    ".join(v6_prefixes)
+                group_content += f"""define {group_name.upper()}_V6 = [
+    {v6_str}
+];
+
+"""
+        
+        files["prefix-groups.conf"] = group_content
+        
+        # customer-prefixes.conf - downstream allowed prefixes
+        customer_content = f"""# ============================================================================
+# Customer (Downstream) Allowed Prefixes
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+        downstream_peers = self.peers["peers"].get("downstream", {})
+        for peer_name, peer_config in downstream_peers.items():
+            allowed = peer_config.get("allowed_prefixes", [])
+            if allowed:
+                prefix_str = ",\n    ".join(allowed)
+                customer_content += f"""define CUSTOMER_{peer_name.upper()}_V4 = [
+    {prefix_str}
+];
+
+"""
+        
+        files["customer-prefixes.conf"] = customer_content
+        
+        # policy-prefixes.conf - VyOS-style prefix lists from policy.yaml
+        policy_content = f"""# ============================================================================
+# VyOS-Style Prefix Lists (from policy.yaml)
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+        prefix_lists = self.policy.get("prefix_lists", {})
+        for plist_name, rules in prefix_lists.items():
+            # Collect all "permit" prefixes (rules sorted by rule number)
+            permit_prefixes = [r["prefix"] for r in sorted(rules, key=lambda x: x.get("rule", 0)) 
+                             if r.get("action") == "permit" and r.get("prefix")]
+            if permit_prefixes:
+                prefix_str = ",\n    ".join(permit_prefixes)
+                safe_name = self._sanitize_identifier(plist_name).upper()
+                policy_content += f"""define {safe_name}_V4 = [
+    {prefix_str}
+];
+
+"""
+        
+        # IPv6 prefix lists
+        prefix_lists_v6 = self.policy.get("prefix_lists_v6", {})
+        for plist_name, rules in prefix_lists_v6.items():
+            permit_prefixes = [r["prefix"] for r in sorted(rules, key=lambda x: x.get("rule", 0)) 
+                             if r.get("action") == "permit" and r.get("prefix")]
+            if permit_prefixes:
+                prefix_str = ",\n    ".join(permit_prefixes)
+                safe_name = self._sanitize_identifier(plist_name).upper()
+                policy_content += f"""define {safe_name}_V6 = [
+    {prefix_str}
+];
+
+"""
+        
+        files["policy-prefixes.conf"] = policy_content
+        
+        # community-lists.conf - VyOS-style community lists
+        community_content = f"""# ============================================================================
+# Community Lists (from policy.yaml)
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+        community_lists = self.policy.get("community_lists", {})
+        for clist_name, rules in community_lists.items():
+            # Collect permit rules and format as BIRD community set
+            permit_communities = []
+            for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                if r.get("action") == "permit" and r.get("regex"):
+                    # Parse regex like "65000:100" -> (65000, 100)
+                    regex = r.get("regex", "")
+                    if ":" in regex:
+                        parts = regex.split(":")
+                        if len(parts) == 2:
+                            permit_communities.append(f"({parts[0]}, {parts[1]})")
+            if permit_communities:
+                comm_str = ", ".join(permit_communities)
+                safe_name = self._sanitize_identifier(clist_name).upper()
+                community_content += f"""define {safe_name}_COMM = [
+    {comm_str}
+];
+
+"""
+
+        # Large community lists
+        large_community_lists = self.policy.get("large_community_lists", {})
+        for lclist_name, rules in large_community_lists.items():
+            permit_large_communities = []
+            for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                if r.get("action") == "permit" and r.get("regex"):
+                    regex = r.get("regex", "")
+                    if ":" in regex:
+                        parts = regex.split(":")
+                        if len(parts) == 3:
+                            permit_large_communities.append(f"({parts[0]}, {parts[1]}, {parts[2]})")
+            if permit_large_communities:
+                lcomm_str = ", ".join(permit_large_communities)
+                safe_name = self._sanitize_identifier(lclist_name).upper()
+                community_content += f"""define {safe_name}_LCOMM = [
+    {lcomm_str}
+];
+
+"""
+        
+
+        # AS Path lists (BIRD filter sets of ASN)
+        as_path_lists = self.policy.get("as_path_lists", {})
+        for aplist_name, rules in as_path_lists.items():
+            as_set = []
+            origin_set = []
+            for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                if r.get("action") == "permit":
+                    if r.get("as"):
+                        as_set.append(str(r.get("as")))
+                    if r.get("origin"):
+                         origin_set.append(str(r.get("origin")))
+            
+            safe_name = self._sanitize_identifier(aplist_name).upper()
+            
+            if as_set:
+                asn_str = ", ".join(as_set)
+                community_content += f"""define {safe_name}_ASPATH = [
+    {asn_str}
+];
+
+"""
+            if origin_set:
+                origin_str = ", ".join(origin_set)
+                community_content += f"""define {safe_name}_ORIGIN = [
+    {origin_str}
+];
+
+"""
+        
+        files["community-lists.conf"] = community_content
+        
+        # route-maps.conf - BIRD functions for route-maps
+        rmap_content = f"""# ============================================================================
+# Route Maps (from policy.yaml)
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+        route_maps = self.policy.get("route_maps", {})
+        for rmap_name, rules in route_maps.items():
+            safe_name = self._sanitize_identifier(rmap_name)
+            # Generate Logic Function
+            rmap_content += f"function route_map_{safe_name}_fn() {{\n"
+            
+            # Sort rules
+            for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                rule_num = r.get("rule")
+                action = r.get("action") # permit/deny
+                match = r.get("match", {})
+                
+                conditions = []
+                
+                # Support flat structure (from bird-mgmt)
+                match_prefix_list = r.get("match_prefix_list") or match.get("prefix_list")
+                # Handle CLI passing "ip address prefix-list" -> match_prefix_list?
+                # Actually bird-mgmt saves it as match_{match_type}. If match_type="prefix_list", key is match_prefix_list.
+                
+                match_prefix_list6 = r.get("match_prefix_list6") or match.get("prefix_list6")
+                
+                match_community_list = r.get("match_community_list")
+                match_large_community_list = r.get("match_large_community_list")
+
+                # Match IPv4 Prefix List
+                if match_prefix_list:
+                    plist_name = self._sanitize_identifier(match_prefix_list).upper()
+                    conditions.append(f"net ~ {plist_name}_V4")
+                
+                # Match IPv6 Prefix List
+                if match_prefix_list6:
+                    plist_name = self._sanitize_identifier(match_prefix_list6).upper()
+                    conditions.append(f"net ~ {plist_name}_V6")
+                
+                # Match Community List
+                if match_community_list:
+                    # Assume community list is defined in prefixes/community-lists.conf (UPPER CASE name usually?)
+                    # Need to verify if user defines them uppercase.
+                    # Usually BIRD constants are uppercase. self._sanitize_identifier().upper() safe default.
+                    clist_name = self._sanitize_identifier(match_community_list).upper()
+                    conditions.append(f"bgp_community ~ {clist_name}_COMM")
+                
+                # Match Large Community List
+                if match_large_community_list:
+                    lclist_name = self._sanitize_identifier(match_large_community_list).upper()
+                    conditions.append(f"bgp_large_community ~ {lclist_name}_LCOMM")
+                
+                # Match AS-path List
+                match_as_path_list = r.get("match_as_path_list")
+                if match_as_path_list:
+                    # Look up AS-path list from policy data
+                    as_path_lists = self.policy.get("as_path_lists", {})
+                    aspath_rules = as_path_lists.get(match_as_path_list, [])
+                    if aspath_rules:
+                        as_conds = []
+                        for aspath_rule in aspath_rules:
+                            if aspath_rule.get("action") != "permit":
+                                continue
+                            # Check 'as' field (path contains AS)
+                            if aspath_rule.get("as"):
+                                asn = aspath_rule["as"]
+                                as_conds.append(f"bgp_path ~ [= {asn} =]")
+                            # Check 'origin' field (bgp_path.last)
+                            elif aspath_rule.get("origin"):
+                                asn = aspath_rule["origin"]
+                                as_conds.append(f"bgp_path.last = {asn}")
+                        if as_conds:
+                            # Combine with OR
+                            if len(as_conds) == 1:
+                                conditions.append(as_conds[0])
+                            else:
+                                conditions.append(f"({' || '.join(as_conds)})")
+
+                # Construct condition string
+                if conditions:
+                    cond_str = " && ".join(conditions)
+                    check = f"if ({cond_str}) then"
+                else:
+                    check = "if true then" # Match everything if no match conditions
+                
+                # Handling SET actions
+                set_actions = []
+                
+                # Clear community first if requested
+                if r.get("clear_community"):
+                    set_actions.append("bgp_community.empty;")
+                if r.get("clear_large_community"):
+                    set_actions.append("bgp_large_community.empty;")
+                
+                # set community (supports list)
+                set_comm = r.get("set_community")
+                if set_comm:
+                    # Handle list or single value
+                    if not isinstance(set_comm, list):
+                        set_comm = [set_comm]
+                    for comm in set_comm:
+                        if ":" in comm:
+                            parts = comm.split(":")
+                            set_actions.append(f"bgp_community.add(({parts[0]}, {parts[1]}));")
+                        else:
+                            set_actions.append(f"bgp_community.add({comm});")
+
+                # set large-community (supports list)
+                set_lcomm = r.get("set_large_community")
+                if set_lcomm:
+                    if not isinstance(set_lcomm, list):
+                        set_lcomm = [set_lcomm]
+                    for lcomm in set_lcomm:
+                        if ":" in lcomm:
+                            parts = lcomm.split(":")
+                            if len(parts) == 3:
+                                set_actions.append(f"bgp_large_community.add(({parts[0]}, {parts[1]}, {parts[2]}));")
+                        else:
+                            set_actions.append(f"bgp_large_community.add({lcomm});")
+                
+                # set local-preference
+                set_lp = r.get("set_local_pref")
+                if set_lp:
+                    set_actions.append(f"bgp_local_pref = {set_lp};")
+
+
+                # Return value based on action
+                ret_val = "true" if action == "permit" else "false"
+                
+                rmap_content += f"    # Rule {rule_num}\n"
+                rmap_content += f"    {check} {{\n"
+                for sa in set_actions:
+                    rmap_content += f"        {sa}\n"
+                rmap_content += f"        return {ret_val};\n"
+                rmap_content += f"    }}\n"
+            
+            # Default behavior at end of route-map
+            rmap_content += "    return false;\n"
+            rmap_content += "}\n\n"
+            
+            # Generate Wrapper Filter (for use in protocols)
+            rmap_content += f"filter route_map_{safe_name} {{\n"
+            rmap_content += f"    if route_map_{safe_name}_fn() then accept;\n"
+            rmap_content += f"    reject;\n"
+            rmap_content += f"}}\n\n"
+            
+        files["route-maps.conf"] = rmap_content
+
+        return files
+    
+    def generate_filters(self):
+        """Generate filter configuration files by peer type"""
+        all_peers, peers_by_type = self._get_all_peers()
+        prefix_data = self._get_prefix_data()
+        files = {}
+        
+        # Map peer types to filter file names (simplified)
+        type_mapping = {
+            "downstream": "ebgp",
+            "upstream": "ebgp",
+            "ix": "ebgp",
+            "bilateral": "ebgp",
+            "backbone": "ibgp",
+            "intercity": "ibgp"
+        }
+        
+        # Group peers by filter type
+        filter_groups = {}
+        for peer_type, peers in peers_by_type.items():
+            filter_type = type_mapping.get(peer_type, peer_type)
+            if filter_type not in filter_groups:
+                filter_groups[filter_type] = {}
+            filter_groups[filter_type].update(peers)
+        
+        # Generate import and export filters per type
+        for filter_type, peers in filter_groups.items():
+            # Import filters
+            import_content = f"""# ============================================================================
+# IMPORT FILTERS - {filter_type.upper()}
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+            for peer_name, peer_config in peers.items():
+                # Use description as name if available, else IP-based
+                if peer_config.get("description"):
+                    safe_peer_name = self._sanitize_identifier(peer_config["description"]).lower()
+                else:
+                    safe_peer_name = self._sanitize_identifier(peer_name)
+                context = {
+                    "router": self.router,
+                    "peer_name": safe_peer_name,
+                    "peer": peer_config,
+                    "martians": self.bogon,
+                    "bogon_asns": self.bogon.get("bogon_asns", {}).get("ranges", []),
+                    "no_transit_asns": self.router.get("no_transit_asns", [])
+                }
+                # IPv4 Import
+                af_v4 = peer_config.get("address_family_ipv4_unicast", {})
+                rmap_import = af_v4.get("route_map_import") or peer_config.get("filter_import")
+                
+                if not rmap_import:
+                    filter_code = self._render_template("filter_import.j2", context)
+                    if filter_code:
+                        import_content += filter_code + "\n\n"
+                
+                # IPv6 import filter
+                if peer_config.get("ipv6_enabled", False):
+                    af_v6 = peer_config.get("address_family_ipv6_unicast", {})
+                    rmap_v6 = af_v6.get("route_map_import")
+                    
+                    if not rmap_v6:
+                        filter_code_v6 = self._render_template("filter_import_v6.j2", context)
+                        if filter_code_v6:
+                            import_content += filter_code_v6 + "\n\n"
+            
+            files[f"import-{filter_type}.conf"] = import_content
+            
+            # Export filters
+            export_content = f"""# ============================================================================
+# EXPORT FILTERS - {filter_type.upper()}
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+            for peer_name, peer_config in peers.items():
+                # Use description as name if available, else IP-based
+                if peer_config.get("description"):
+                    safe_peer_name = self._sanitize_identifier(peer_config["description"]).lower()
+                else:
+                    safe_peer_name = self._sanitize_identifier(peer_name)
+                context = {
+                    "router": self.router,
+                    "peer_name": safe_peer_name,
+                    "peer": peer_config,
+                    "peers": self.peers["peers"],
+                    "downstream_peers": self.peers["peers"].get("downstream", {}),
+                    "own_prefixes_v4": prefix_data["own_prefixes_v4"],
+                    "remote_own_prefixes_v4": prefix_data["remote_own_prefixes_v4"],
+                    "prefix_groups": prefix_data["prefix_groups"]
+                }
+                # IPv4 Export
+                af_v4 = peer_config.get("address_family_ipv4_unicast", {})
+                rmap_export = af_v4.get("route_map_export") or peer_config.get("filter_export")
+                
+                context_v4 = context.copy()
+                if rmap_export:
+                    context_v4["rmap_export"] = rmap_export
+                
+                filter_code = self._render_template("filter_export.j2", context_v4)
+                if filter_code:
+                    export_content += filter_code + "\n\n"
+                
+                # IPv6 export filter
+                if peer_config.get("ipv6_enabled", False):
+                    context["own_prefixes_v6"] = prefix_data["own_prefixes_v6"]
+                    
+                    af_v6 = peer_config.get("address_family_ipv6_unicast", {})
+                    rmap_v6 = af_v6.get("route_map_export")
+                    
+                    context_v6 = context.copy()
+                    if rmap_v6:
+                        context_v6["rmap_export"] = rmap_v6
+                        
+                    filter_code_v6 = self._render_template("filter_export_v6.j2", context_v6)
+                    if filter_code_v6:
+                        export_content += filter_code_v6 + "\n\n"
+            
+            files[f"export-{filter_type}.conf"] = export_content
+        
+        return files
+    
+    def generate_protocols(self):
+        """Generate protocol configuration files by peer type"""
+        all_peers, peers_by_type = self._get_all_peers()
+        files = {}
+        
+        # Map peer types to protocol file names (simplified)
+        type_mapping = {
+            "downstream": "bgp",
+            "upstream": "bgp",
+            "ix": "bgp",
+            "bilateral": "bgp",
+            "backbone": "ibgp",
+            "intercity": "ibgp"
+        }
+        
+        # Group peers by protocol file
+        protocol_groups = {}
+        for peer_type, peers in peers_by_type.items():
+            file_name = type_mapping.get(peer_type, f"bgp-{peer_type}")
+            if file_name not in protocol_groups:
+                protocol_groups[file_name] = {}
+            protocol_groups[file_name].update(peers)
+        
+        # Generate protocol files
+        for file_name, peers in protocol_groups.items():
+            content = f"""# ============================================================================
+# BGP PROTOCOLS - {file_name.upper().replace('-', ' ')}
+# Generated: {datetime.now().isoformat()}
+# ============================================================================
+
+"""
+            for peer_name, peer_config in peers.items():
+                # Use description as name if available, else IP-based
+                if peer_config.get("description"):
+                    safe_peer_name = self._sanitize_identifier(peer_config["description"]).lower()
+                else:
+                    safe_peer_name = self._sanitize_identifier(peer_name)
+                context = {
+                    "router": self.router,
+                    "peer_name": safe_peer_name,
+                    "peer": peer_config
+                }
+                protocol_code = self._render_template("protocol.j2", context)
+                if protocol_code:
+                    content += protocol_code + "\n\n"
+            
+            files[f"{file_name}.conf"] = content
+        
+        return files
+    
+    def generate_static_routes(self):
+        """Generate static routes configuration"""
+        static_routes = self.router.get("static_routes", {})
+        ipv4_routes = static_routes.get("ipv4", [])
+        ipv6_routes = static_routes.get("ipv6", [])
+        
+        blackhole_data = self._load_yaml_optional("blackhole.yaml")
+        blackhole_v4 = blackhole_data.get("blackhole_routes_v4", [])
+        blackhole_v6 = blackhole_data.get("blackhole_routes_v6", [])
+        
+        config = [
+            f"# ===========================================================================",
+            f"# STATIC ROUTES",
+            f"# Generated: {datetime.now().isoformat()}",
+            f"# ===========================================================================",
+            ""
+        ]
+        
+        # IPv4 Static Routes
+        config.append("protocol static static_v4 {")
+        config.append("    ipv4 { export all; import all; };")
+        
+        # Regular static routes
+        for route in ipv4_routes:
+            prefix = route.get("prefix")
+            via = route.get("via")
+            if prefix and via:
+                config.append(f"    route {prefix} via {via};")
+        
+        # Blackhole routes
+        for route in blackhole_v4:
+            prefix = route.get("prefix")
+            if prefix:
+                config.append(f"    route {prefix} blackhole;")
+                
+        config.append("}")
+        config.append("")
+        
+        # IPv6 Static Routes
+        config.append("protocol static static_v6 {")
+        config.append("    ipv6 { export all; import all; };")
+        
+        # Regular static routes
+        for route in ipv6_routes:
+            prefix = route.get("prefix")
+            via = route.get("via")
+            if prefix and via:
+                config.append(f"    route {prefix} via {via};")
+
+        # Blackhole routes
+        for route in blackhole_v6:
+            prefix = route.get("prefix")
+            if prefix:
+                config.append(f"    route {prefix} blackhole;")
+                
+        config.append("}")
+        config.append("")
+        
+        return "\n".join(config)
+    
+    def generate_modular(self):
+        """Generate consolidated configuration files"""
+        # Backup existing output
+        if self.output_dir.exists():
+            backup_dir = self.output_dir.parent / f"output.backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            if (self.output_dir / "bird.conf").exists():
+                shutil.move(str(self.output_dir), str(backup_dir))
+                print(f"Backed up existing output to {backup_dir}")
+                
+                # Cleanup old backups - keep only last 7
+                backup_dirs = sorted(
+                    [d for d in self.output_dir.parent.glob("output.backup-*") if d.is_dir()],
+                    key=lambda x: x.name,
+                    reverse=True
+                )
+                for old_backup in backup_dirs[7:]:
+                    shutil.rmtree(old_backup)
+                    print(f"Removed old backup: {old_backup.name}")
+        
+        # Create fresh output directory
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        files_written = []
+        
+        # 1. bird.conf
+        main_config = self.generate_main_config()
+        self._write_file("bird.conf", main_config)
+        files_written.append("bird.conf")
+        
+        # 2. functions.conf
+        functions = self.generate_functions()
+        self._write_file("functions.conf", functions)
+        files_written.append("functions.conf")
+        
+        # 3. static-routes.conf
+        static_routes = self.generate_static_routes()
+        self._write_file("static-routes.conf", static_routes)
+        files_written.append("static-routes.conf")
+        
+        # 4. route-maps.conf (Aggregated)
+        route_maps_content = "# ===========================================================================\n"
+        route_maps_content += f"# ROUTE MAPS AND POLICY OBJECTS (Consolidated)\n"
+        route_maps_content += f"# Generated: {datetime.now().isoformat()}\n"
+        route_maps_content += "# ===========================================================================\n\n"
+        
+        # Append Prefix Lists, Community Lists
+        prefix_files = self.generate_prefixes()
+        # Order matters: Primitives first
+        order = ["bogons.conf", "own-prefixes.conf", "remote-prefixes.conf", 
+                 "prefix-groups.conf", "customer-prefixes.conf", 
+                 "policy-prefixes.conf", "community-lists.conf", "route-maps.conf"]
+        
+        # Note: generate_prefixes actually returns keys like "bogons.conf", "policy-prefixes.conf", "community-lists.conf", "route-maps.conf"
+        # We need to extract them.
+        
+        for key in order:
+            if key in prefix_files:
+                route_maps_content += f"# --- {key} ---\n"
+                route_maps_content += prefix_files[key] + "\n\n"
+                
+        self._write_file("route-maps.conf", route_maps_content)
+        files_written.append("route-maps.conf")
+        
+        # 5. bgp.conf (Aggregated Filters + Protocols)
+        bgp_content = "# ===========================================================================\n"
+        bgp_content += f"# BGP CONFIGURATION (Filters + Protocols)\n"
+        bgp_content += f"# Generated: {datetime.now().isoformat()}\n"
+        bgp_content += "# ===========================================================================\n\n"
+        
+        # Filters first
+        filter_files = self.generate_filters()
+        # Sort filters to ensure consistent order (Imports then Exports usually fine, or by type)
+        # Actually generate_filters returns keys like "import-ebgp.conf", "export-ibgp.conf"
+        for key in sorted(filter_files.keys()):
+             bgp_content += f"# --- {key} ---\n"
+             bgp_content += filter_files[key] + "\n\n"
+             
+        # Protocols second
+        protocol_files = self.generate_protocols()
+        for key in sorted(protocol_files.keys()):
+            bgp_content += f"# --- {key} ---\n"
+            bgp_content += protocol_files[key] + "\n\n"
+            
+        self._write_file("bgp.conf", bgp_content)
+        files_written.append("bgp.conf")
+        
+        return files_written
+    
+    def validate_syntax(self):
+        """Validate BIRD config syntax using bird"""
+        import subprocess
+        
+        config_file = self.output_dir / "bird.conf"
+        
+        try:
+            result = subprocess.run(
+                ["bird", "-c", str(config_file), "-p"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                print(f"✓ Config validation passed")
+                return True
+            else:
+                print(f"✗ Config validation failed:")
+                print(result.stderr)
+                return False
+        except FileNotFoundError:
+            print("Warning: bird command not found - skipping syntax validation")
+            return True
+        except Exception as e:
+            print(f"Error validating config: {e}")
+            return False
+
+
+def main():
+    # Framework directory
+    framework_dir = Path(__file__).parent.parent
+    
+    print("=" * 70)
+    print("BIRD Configuration Generator - Modular Output")
+    print("=" * 70)
+    print(f"Framework directory: {framework_dir}")
+    print()
+    
+    # Generate config
+    generator = BirdConfigGenerator(framework_dir)
+    
+    print("Loading YAML data files...")
+    print(f"  - Router: {generator.router.get('name', 'Unknown')} (AS{generator.router.get('asn', 'Unknown')})")
+    print(f"  - Backbone peers (iBGP): {len(generator.peers['peers'].get('backbone', {}))}")
+    print(f"  - Intercity peers: {len(generator.peers['peers'].get('intercity', {}))}")
+    print(f"  - Upstream peers: {len(generator.peers['peers'].get('upstream', {}))}")
+    print(f"  - Downstream peers: {len(generator.peers['peers'].get('downstream', {}))}")
+    print(f"  - IX peers: {len(generator.peers['peers'].get('ix', {}))}")
+    print(f"  - Bilateral peers: {len(generator.peers['peers'].get('bilateral', {}))}")
+    print()
+    
+    print("Generating modular BIRD configuration...")
+    files_written = generator.generate_modular()
+    print(f"\nGenerated {len(files_written)} files:")
+    for f in files_written:
+        print(f"  - output/{f}")
+    print()
+    
+    print(f"Validating syntax...")
+    if generator.validate_syntax():
+        print()
+        print("=" * 70)
+        print("✓ Configuration generation completed successfully!")
+        print(f"Output directory: {generator.output_dir}")
+        print()
+        print("Structure:")
+        print("  output/")
+        print("  ├── bird.conf          # Main config (includes)")
+        print("  ├── functions.conf     # System functions")
+        print("  ├── static-routes.conf # Static routes + blackholes")
+        print("  ├── route-maps.conf    # Policy objects + route maps")
+        print("  └── bgp.conf           # BGP filters + protocols")
+        print("=" * 70)
+    else:
+        print()
+        print("=" * 70)
+        print("✗ Configuration has syntax errors - please check above")
+        print("=" * 70)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
