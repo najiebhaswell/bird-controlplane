@@ -47,6 +47,12 @@
 				/home/well/bird-controlplane/bin/bird-mgmt show-static-routes
 				</ACTION>
 			</COMMAND>
+
+			<COMMAND name="running-config" help="Show running configuration">
+				<ACTION sym="script">
+				/home/well/bird-controlplane/bin/bird-mgmt show-running-config
+				</ACTION>
+			</COMMAND>
 			
 
 

@@ -1082,6 +1082,174 @@ class BirdMgmtCLI:
             # Handle non-list objects if any (future proofing)
             print(yaml.dump(items))
 
+    def show_running_config(self):
+        """Show running configuration in VyOS-style set commands"""
+        print("# Running Configuration")
+        print("# Generated:", datetime.now().isoformat())
+        print()
+        
+        # === Router Identity ===
+        if self.router_data:
+            print("# Router Identity")
+            if "asn" in self.router_data:
+                print(f"set system as {self.router_data['asn']}")
+            if "router_id" in self.router_data:
+                print(f"set system router-id {self.router_data['router_id']}")
+            if "hostname" in self.router_data:
+                print(f"set system hostname {self.router_data['hostname']}")
+            print()
+        
+        # === Policy Objects ===
+        # Prefix Lists
+        prefix_lists = self.policy_data.get("prefix_lists", {})
+        if prefix_lists:
+            print("# Prefix Lists (IPv4)")
+            for name, rules in prefix_lists.items():
+                for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                    rule = r.get("rule", 10)
+                    action = r.get("action", "permit")
+                    print(f"set policy prefix-list {name} rule {rule} action {action}")
+                    if "prefix" in r:
+                        print(f"set policy prefix-list {name} rule {rule} prefix {r['prefix']}")
+            print()
+        
+        # Prefix Lists IPv6
+        prefix_lists_v6 = self.policy_data.get("prefix_lists_v6", {})
+        if prefix_lists_v6:
+            print("# Prefix Lists (IPv6)")
+            for name, rules in prefix_lists_v6.items():
+                for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                    rule = r.get("rule", 10)
+                    action = r.get("action", "permit")
+                    print(f"set policy prefix-list6 {name} rule {rule} action {action}")
+                    if "prefix" in r:
+                        print(f"set policy prefix-list6 {name} rule {rule} prefix {r['prefix']}")
+            print()
+        
+        # Community Lists
+        community_lists = self.policy_data.get("community_lists", {})
+        if community_lists:
+            print("# Community Lists")
+            for name, rules in community_lists.items():
+                for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                    rule = r.get("rule", 10)
+                    action = r.get("action", "permit")
+                    print(f"set policy community-list {name} rule {rule} action {action}")
+                    if "regex" in r:
+                        print(f"set policy community-list {name} rule {rule} regex {r['regex']}")
+            print()
+        
+        # Large Community Lists
+        large_community_lists = self.policy_data.get("large_community_lists", {})
+        if large_community_lists:
+            print("# Large Community Lists")
+            for name, rules in large_community_lists.items():
+                for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                    rule = r.get("rule", 10)
+                    action = r.get("action", "permit")
+                    print(f"set policy large-community-list {name} rule {rule} action {action}")
+                    if "regex" in r:
+                        print(f"set policy large-community-list {name} rule {rule} regex {r['regex']}")
+            print()
+        
+        # AS-Path Lists
+        as_path_lists = self.policy_data.get("as_path_lists", {})
+        if as_path_lists:
+            print("# AS-Path Lists")
+            for name, rules in as_path_lists.items():
+                for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                    rule = r.get("rule", 10)
+                    action = r.get("action", "permit")
+                    print(f"set policy as-path-list {name} rule {rule} action {action}")
+                    if "as" in r:
+                        print(f"set policy as-path-list {name} rule {rule} as {r['as']}")
+                    if "origin" in r:
+                        print(f"set policy as-path-list {name} rule {rule} origin {r['origin']}")
+            print()
+        
+        # Route Maps
+        route_maps = self.policy_data.get("route_maps", {})
+        if route_maps:
+            print("# Route Maps")
+            for name, rules in route_maps.items():
+                for r in sorted(rules, key=lambda x: x.get("rule", 0)):
+                    rule = r.get("rule", 10)
+                    action = r.get("action", "permit")
+                    print(f"set policy route-map {name} rule {rule} action {action}")
+                    
+                    # Match conditions
+                    if "match_prefix_list" in r:
+                        print(f"set policy route-map {name} rule {rule} match prefix-list {r['match_prefix_list']}")
+                    if "match_prefix_list6" in r:
+                        print(f"set policy route-map {name} rule {rule} match ipv6 address prefix-list {r['match_prefix_list6']}")
+                    if "match_community_list" in r:
+                        print(f"set policy route-map {name} rule {rule} match community list {r['match_community_list']}")
+                    if "match_as_path_list" in r:
+                        print(f"set policy route-map {name} rule {rule} match as-path list {r['match_as_path_list']}")
+                    
+                    # Set actions
+                    if "set_local_pref" in r:
+                        print(f"set policy route-map {name} rule {rule} set local-preference {r['set_local_pref']}")
+                    if "set_community" in r:
+                        print(f"set policy route-map {name} rule {rule} set community {r['set_community']}")
+            print()
+        
+        # === BGP Peers ===
+        peers = self.peers_data.get("peers", {})
+        if any(peers.values()):
+            print("# BGP Peers")
+            for group, peer_dict in peers.items():
+                for ip, peer in peer_dict.items():
+                    asn = peer.get("asn", peer.get("remote_as", ""))
+                    desc = peer.get("description", "")
+                    
+                    print(f"set protocols bgp neighbor {ip} remote-as {asn}")
+                    if desc:
+                        print(f"set protocols bgp neighbor {ip} description {desc}")
+                    
+                    if peer.get("shutdown"):
+                        print(f"set protocols bgp neighbor {ip} shutdown")
+                    
+                    # Address family IPv4
+                    af_v4 = peer.get("address_family_ipv4_unicast", {})
+                    if af_v4.get("route_map_import"):
+                        print(f"set protocols bgp neighbor {ip} address-family ipv4-unicast route-map import {af_v4['route_map_import']}")
+                    if af_v4.get("route_map_export"):
+                        print(f"set protocols bgp neighbor {ip} address-family ipv4-unicast route-map export {af_v4['route_map_export']}")
+                    
+                    # Redistribute
+                    if peer.get("redistribute_static"):
+                        print(f"set protocols bgp neighbor {ip} redistribute static")
+                    if peer.get("redistribute_connected"):
+                        print(f"set protocols bgp neighbor {ip} redistribute connected")
+                    
+                    # Address family IPv6
+                    af_v6 = peer.get("address_family_ipv6_unicast", {})
+                    if af_v6.get("route_map_import"):
+                        print(f"set protocols bgp neighbor {ip} address-family ipv6-unicast route-map import {af_v6['route_map_import']}")
+                    if af_v6.get("route_map_export"):
+                        print(f"set protocols bgp neighbor {ip} address-family ipv6-unicast route-map export {af_v6['route_map_export']}")
+            print()
+        
+        # === Static Routes ===
+        static_routes = self.router_data.get("static_routes", [])
+        if static_routes:
+            print("# Static Routes")
+            for route in static_routes:
+                prefix = route.get("prefix", "")
+                nexthop = route.get("nexthop", "")
+                if prefix and nexthop:
+                    print(f"set protocols static route {prefix} via {nexthop}")
+            print()
+        
+        # === Blackhole Routes ===
+        blackhole_routes = self.blackhole_data.get("blackhole_routes", [])
+        if blackhole_routes:
+            print("# Blackhole Routes")
+            for prefix in blackhole_routes:
+                print(f"set protocols static route {prefix} blackhole")
+            print()
+
     def delete_policy_object(self, obj_type, name):
         """Delete an entire policy object (e.g., prefix-list)"""
         key_map = {
@@ -1844,6 +2012,7 @@ def main():
     subparsers.add_parser("show-peers", help="Show Peers")
     p_show_peer_detail = subparsers.add_parser("show-peer-detail", help="Show peer detail")
     p_show_peer_detail.add_argument("ip", help="Peer IP address")
+    subparsers.add_parser("show-running-config", help="Show running config in VyOS-style format")
     subparsers.add_parser("status", help="Show Status")
     subparsers.add_parser("validate", help="Validate")
     subparsers.add_parser("deploy", help="Deploy")
@@ -2141,6 +2310,7 @@ def main():
     cmd = args.command
     if cmd == "show-peers": cli.show_peers()
     elif cmd == "show-peer-detail": cli.show_peer_detail(args.ip)
+    elif cmd == "show-running-config": cli.show_running_config()
     elif cmd == "status": cli.show_peers()
     elif cmd == "validate": cli.validate_config()
     elif cmd == "deploy": cli.deploy()
