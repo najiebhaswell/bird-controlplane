@@ -1232,18 +1232,21 @@ class BirdMgmtCLI:
             print()
         
         # === Static Routes ===
-        static_routes = self.router_data.get("static_routes", [])
-        if static_routes:
+        static_routes = self.router_data.get("static_routes", {})
+        ipv4_routes = static_routes.get("ipv4", []) if isinstance(static_routes, dict) else []
+        if ipv4_routes:
             print("# Static Routes")
-            for route in static_routes:
-                prefix = route.get("prefix", "")
-                nexthop = route.get("nexthop", "")
-                if prefix and nexthop:
-                    print(f"set protocols static route {prefix} via {nexthop}")
+            for route in ipv4_routes:
+                if isinstance(route, dict):
+                    prefix = route.get("prefix", "")
+                    nexthop = route.get("via", route.get("nexthop", ""))
+                    if prefix and nexthop:
+                        print(f"set protocols static route {prefix} via {nexthop}")
             print()
         
         # === Blackhole Routes ===
-        blackhole_routes = self.blackhole_data.get("blackhole_routes", [])
+        blackhole_data = self._load_yaml(self.blackhole_file)
+        blackhole_routes = blackhole_data.get("blackhole_routes", [])
         if blackhole_routes:
             print("# Blackhole Routes")
             for prefix in blackhole_routes:
