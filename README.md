@@ -13,15 +13,29 @@ A comprehensive CLI management system for BIRD2 routing daemon, featuring VyOS-s
 
 ## Quick Start
 
-### 1. Start the CLI Daemon
+### 1. Installation
+
+#### Option A: Debian Package (Recommended for Production)
 ```bash
-./start_klishd
+sudo dpkg -i bird-controlplane_1.0.0_amd64.deb
+sudo apt install -f  # Install dependencies if needed
 ```
 
-### 2. Connect to CLI
+**Using the CLI:**
+When installed via package, the command is:
 ```bash
+bird-cli
+```
+
+#### Option B: Manual Installation (Development)
+```bash
+# Start backend
+./start_klishd
+
+# Connect to CLI
 ./cli
 ```
+
 
 ### 3. Basic Configuration
 ```bash
